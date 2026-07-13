@@ -11,5 +11,6 @@ const deploymentEnv = process.env.CDK_DEFAULT_ACCOUNT
 
 new HonorBenefitsPilotStack(app, "HonorBenefitsPilotStack", {
   env: deploymentEnv,
-  description: "병역명문가 혜택찾기 10명 미만 비공개 파일럿"
+  description: "병역명문가 혜택찾기 10명 미만 비공개 파일럿",
+  terminationProtection: true
 });

@@ -3,20 +3,21 @@ import { Match, Template } from "aws-cdk-lib/assertions";
 import { beforeAll, describe, expect, it } from "vitest";
 import { HonorBenefitsPilotStack } from "../lib/honor-benefits-pilot-stack";
 
-const synthTemplate = (): Template => {
-  const app = new App();
-  const stack = new HonorBenefitsPilotStack(app, "TestStack", {
-    env: { account: "111111111111", region: "ap-northeast-2" }
-  });
-  return Template.fromStack(stack);
-};
-
+let stack: HonorBenefitsPilotStack;
 let template: Template;
 beforeAll(() => {
-  template = synthTemplate();
+  const app = new App();
+  stack = new HonorBenefitsPilotStack(app, "TestStack", {
+    env: { account: "111111111111", region: "ap-northeast-2" }
+  });
+  template = Template.fromStack(stack);
 }, 60_000);
 
 describe("HonorBenefitsPilotStack", () => {
+  it("enables stack termination protection by default", () => {
+    expect(stack.terminationProtection).toBe(true);
+  });
+
   it("keeps pilot data private, versioned and bounded", () => {
     template.hasResourceProperties("AWS::S3::Bucket", {
       VersioningConfiguration: { Status: "Enabled" },
@@ -51,22 +52,89 @@ describe("HonorBenefitsPilotStack", () => {
     });
   });
 
-  it("uses Cognito choice-based email OTP and JWT-protected HTTP routes", () => {
-    template.hasResourceProperties("AWS::Cognito::UserPool", {
+  it("gates Cognito email OTP behind verified SES and protects HTTP routes", () => {
+    const synthesized = template.toJSON() as {
+      Parameters: Record<string, unknown>;
+      Conditions: Record<string, unknown>;
+    };
+    expect(synthesized.Parameters.EmailOtpEnabled).toEqual({
+      Type: "String",
+      Default: "false",
+      AllowedValues: ["true", "false"],
+      Description: expect.stringContaining("only after the SES sender identity")
+    });
+    expect(synthesized.Conditions.EmailOtpEnabledCondition).toEqual({
+      "Fn::Equals": [{ Ref: "EmailOtpEnabled" }, "true"]
+    });
+
+    const userPoolResource = Object.values(template.findResources("AWS::Cognito::UserPool"))[0] as {
+      DependsOn: string[];
+      Properties: {
+        UsernameAttributes: string[];
+        AutoVerifiedAttributes: string[];
+        AdminCreateUserConfig: { AllowAdminCreateUserOnly: boolean };
+        UserPoolTier: string;
+        EmailConfiguration: {
+          "Fn::If": [string, Record<string, unknown>, Record<string, unknown>];
+        };
+        Policies: {
+          "Fn::If": [string, Record<string, unknown>, Record<string, unknown>];
+        };
+        EmailVerificationMessage?: string;
+        EmailVerificationSubject?: string;
+        VerificationMessageTemplate?: Record<string, unknown>;
+      };
+    };
+    expect(userPoolResource.DependsOn).toContain("SesEmailIdentity");
+    expect(userPoolResource.Properties).toMatchObject({
       UsernameAttributes: ["email"],
       AutoVerifiedAttributes: ["email"],
       AdminCreateUserConfig: { AllowAdminCreateUserOnly: true },
-      EmailConfiguration: {
-        EmailSendingAccount: "DEVELOPER",
-        SourceArn: Match.anyValue()
-      },
-      UserPoolTier: "ESSENTIALS",
-      Policies: {
-        SignInPolicy: {
-          AllowedFirstAuthFactors: ["PASSWORD", "EMAIL_OTP"]
-        }
-      }
+      UserPoolTier: "ESSENTIALS"
     });
+    expect(userPoolResource.Properties.EmailConfiguration).toEqual({
+      "Fn::If": [
+        "EmailOtpEnabledCondition",
+        {
+          EmailSendingAccount: "DEVELOPER",
+          SourceArn: {
+            "Fn::Join": [
+              "",
+              [
+                "arn:",
+                { Ref: "AWS::Partition" },
+                ":ses:ap-northeast-2:111111111111:identity/",
+                { Ref: "SesFromEmail" }
+              ]
+            ]
+          },
+          From: { Ref: "SesFromEmail" },
+          ConfigurationSet: "honor-benefits-pilot"
+        },
+        {
+          EmailSendingAccount: "COGNITO_DEFAULT"
+        }
+      ]
+    });
+    expect(userPoolResource.Properties.Policies).toEqual({
+      "Fn::If": [
+        "EmailOtpEnabledCondition",
+        {
+          SignInPolicy: {
+            AllowedFirstAuthFactors: ["PASSWORD", "EMAIL_OTP"]
+          }
+        },
+        {
+          SignInPolicy: {
+            AllowedFirstAuthFactors: ["PASSWORD"]
+          }
+        }
+      ]
+    });
+    expect(userPoolResource.Properties).not.toHaveProperty("EmailVerificationMessage");
+    expect(userPoolResource.Properties).not.toHaveProperty("EmailVerificationSubject");
+    expect(userPoolResource.Properties.VerificationMessageTemplate ?? {}).not.toHaveProperty("EmailMessage");
+    expect(userPoolResource.Properties.VerificationMessageTemplate ?? {}).not.toHaveProperty("EmailSubject");
     template.hasResourceProperties("AWS::Cognito::UserPoolClient", {
       GenerateSecret: false,
       ExplicitAuthFlows: Match.arrayWith(["ALLOW_USER_AUTH"]),
@@ -87,6 +155,16 @@ describe("HonorBenefitsPilotStack", () => {
       DefaultRouteSettings: {
         ThrottlingBurstLimit: 20,
         ThrottlingRateLimit: 10
+      },
+      RouteSettings: {
+        "POST /v1/auth/otp/start": {
+          ThrottlingBurstLimit: 2,
+          ThrottlingRateLimit: 1
+        },
+        "POST /v1/auth/otp/verify": {
+          ThrottlingBurstLimit: 5,
+          ThrottlingRateLimit: 2
+        }
       }
     });
   });
@@ -96,26 +174,46 @@ describe("HonorBenefitsPilotStack", () => {
     template.allResourcesProperties("AWS::Lambda::Function", {
       Runtime: "nodejs24.x",
       Architectures: ["arm64"],
-      DeadLetterConfig: { TargetArn: Match.anyValue() },
-      Environment: {
-        Variables: Match.objectLike({
-          PILOT_SLUG: Match.anyValue(),
-          PUBLIC_APP_URL: Match.anyValue(),
-          VAPID_SUBJECT: Match.anyValue(),
-          TABLE_NAME: Match.anyValue(),
-          DATA_BUCKET: Match.anyValue(),
-          MMA_LIVE_INGESTION_ENABLED: Match.anyValue(),
-          SES_FROM_EMAIL: Match.anyValue(),
-          AMPLIFY_APP_ID: Match.anyValue()
-        })
-      }
+      DeadLetterConfig: { TargetArn: Match.anyValue() }
     });
-    template.hasResourceProperties("AWS::Lambda::Function", {
-      FunctionName: "honor-pilot-publish",
-      Environment: {
-        Variables: Match.objectLike({ NOTIFICATION_FUNCTION_NAME: Match.anyValue() })
-      }
-    });
+
+    const lambdaResources = Object.values(template.findResources("AWS::Lambda::Function")) as Array<{
+      Properties: {
+        FunctionName: string;
+        Environment: { Variables: Record<string, unknown> };
+      };
+    }>;
+    const environment = (functionName: string): Record<string, unknown> => {
+      const resource = lambdaResources.find(({ Properties }) => Properties.FunctionName === functionName);
+      if (!resource) throw new Error("Lambda not found: " + functionName);
+      return resource.Properties.Environment.Variables;
+    };
+    const keys = (functionName: string): string[] => Object.keys(environment(functionName)).sort();
+
+    expect(keys("honor-pilot-ingest-mma-facilities")).toEqual([
+      "DATA_BUCKET", "DATA_PREFIX", "MMA_FACILITIES_URL", "MMA_LIVE_INGESTION_ENABLED", "RAW_PREFIX", "TABLE_NAME"
+    ]);
+    expect(keys("honor-pilot-ingest-mma-notices")).toEqual([
+      "DATA_BUCKET", "DATA_PREFIX", "MMA_LIVE_INGESTION_ENABLED", "MMA_NOTICES_URL", "RAW_PREFIX", "TABLE_NAME"
+    ]);
+    expect(keys("honor-pilot-ingest-ordinances")).toEqual([
+      "DATA_BUCKET", "DATA_PREFIX", "LAW_API_BASE_URL", "LAW_API_OC", "RAW_PREFIX", "TABLE_NAME"
+    ]);
+    expect(keys("honor-pilot-subscriptions")).toEqual(["TABLE_NAME"]);
+    expect(keys("honor-pilot-auth-otp")).toEqual([
+      "ADMIN_EMAILS", "PILOT_ALLOWED_EMAILS", "USER_POOL_CLIENT_ID", "USER_POOL_ID"
+    ]);
+    expect(keys("honor-pilot-push-subscriptions")).toEqual(["TABLE_NAME", "USER_POOL_ID"]);
+    expect(keys("honor-pilot-admin-reviews")).toEqual(["ADMIN_EMAILS", "TABLE_NAME"]);
+    expect(keys("honor-pilot-publish")).toEqual([
+      "ADMIN_EMAILS", "AMPLIFY_APP_ID", "AMPLIFY_BRANCH", "DATA_BUCKET", "DATA_PREFIX",
+      "NOTIFICATION_FUNCTION_NAME", "PUBLISH_ENABLED", "RAW_PREFIX", "TABLE_NAME"
+    ]);
+    expect(environment("honor-pilot-publish").PUBLISH_ENABLED).toBe("false");
+    expect(keys("honor-pilot-weekly-notifications")).toEqual([
+      "PILOT_SLUG", "PUBLIC_APP_URL", "SES_FROM_EMAIL", "TABLE_NAME",
+      "VAPID_PRIVATE_KEY", "VAPID_PUBLIC_KEY", "VAPID_SUBJECT"
+    ]);
     template.hasResourceProperties("AWS::IAM::Policy", {
       PolicyDocument: {
         Statement: Match.arrayWith([
@@ -123,6 +221,30 @@ describe("HonorBenefitsPilotStack", () => {
         ])
       }
     });
+
+    const iamPolicies = Object.values(template.findResources("AWS::IAM::Policy")) as Array<{
+      Properties: {
+        PolicyDocument: {
+          Statement: Array<{
+            Action: string | string[];
+            Resource: unknown;
+            Condition?: unknown;
+          }>;
+        };
+      };
+    }>;
+    const sesStatement = iamPolicies
+      .flatMap(({ Properties }) => Properties.PolicyDocument.Statement)
+      .find(({ Action }) => Array.isArray(Action) && Action.includes("ses:SendEmail"));
+    expect(sesStatement).toBeDefined();
+    expect(sesStatement?.Resource).not.toBe("*");
+    expect(JSON.stringify(sesStatement?.Resource)).toContain(":identity/");
+    expect(sesStatement?.Condition).toEqual({
+      StringEquals: {
+        "ses:FromAddress": { Ref: "SesFromEmail" }
+      }
+    });
+
     template.resourceCountIs("AWS::Events::Rule", 5);
     template.resourceCountIs("AWS::CloudWatch::Alarm", 10);
     template.resourceCountIs("AWS::Logs::LogGroup", 10);
@@ -144,7 +266,31 @@ describe("HonorBenefitsPilotStack", () => {
         Match.objectLike({ Source: "/", Target: "/404.html", Status: "404" })
       ])
     });
+    const amplifyApp = Object.values(template.findResources("AWS::Amplify::App"))[0] as {
+      Properties: { BuildSpec: string; CustomHeaders: string };
+    };
+    expect(amplifyApp.Properties.BuildSpec).toContain("pnpm --filter @honor/web test");
+    expect(amplifyApp.Properties.BuildSpec).toContain("test -f apps/web/out/404.html");
+    expect(amplifyApp.Properties.BuildSpec).toContain(
+      'test -f "apps/web/out/pilot/$NEXT_PUBLIC_PILOT_SLUG/index.html"'
+    );
+    expect(amplifyApp.Properties.BuildSpec.indexOf("pnpm --filter @honor/web test")).toBeLessThan(
+      amplifyApp.Properties.BuildSpec.indexOf("pnpm --filter @honor/web build")
+    );
+    expect(amplifyApp.Properties.CustomHeaders).toContain("Content-Security-Policy");
+    expect(amplifyApp.Properties.CustomHeaders).toContain("https://dapi.kakao.com");
+    expect(amplifyApp.Properties.CustomHeaders).toContain("https://*.execute-api.ap-northeast-2.amazonaws.com");
+    expect(amplifyApp.Properties.CustomHeaders).toContain("Permissions-Policy");
+    expect(amplifyApp.Properties.CustomHeaders).toContain("Strict-Transport-Security");
+
     template.resourceCountIs("AWS::Budgets::Budget", 2);
+    template.allResourcesProperties("AWS::Budgets::Budget", {
+      Budget: Match.objectLike({
+        CostFilters: {
+          TagKeyValue: ["user:Environment$pilot"]
+        }
+      })
+    });
     template.resourceCountIs("AWS::SES::ConfigurationSet", 1);
     template.resourceCountIs("AWS::SES::EmailIdentity", 1);
     template.resourceCountIs("AWS::WAFv2::WebACL", 0);

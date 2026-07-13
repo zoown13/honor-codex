@@ -8,7 +8,10 @@ workload. Persistent S3, DynamoDB, Cognito and SQS resources use retain policies
 
 - `PilotSlug`: 22 or more URL-safe random characters (128 bits or stronger).
 - `AlertEmail`: recipient for SNS and AWS Budgets alerts.
-- `SesFromEmail`: an email identity that can be verified in the SES sandbox.
+- `SesFromEmail`: the SES sender identity for weekly notifications and, after
+  verification, Cognito email OTP.
+- `EmailOtpEnabled`: keep the default `false` for the first deployment. Set to
+  `true` only after the SES sender identity and every sandbox recipient are verified.
 - `PilotAllowedEmails`: comma-separated email allowlist for OTP access (empty
   intentionally permits no pilot users until configured).
 
@@ -26,13 +29,19 @@ mode; upload `apps/web/out` using Amplify's create/start deployment APIs.
 ## First deployment and browser configuration
 
 Amplify generates its hostname and API Gateway generates its endpoint during
-the first deployment, so use a two-pass setup without broad CORS:
+the first deployment, so use this verification-gated two-pass setup:
 
-1. Deploy once with the required parameters.
-2. Copy the `AmplifyBranchUrl` and `HttpApiEndpoint` stack outputs.
-3. Deploy again with `CorsAllowedOrigin=<AmplifyBranchUrl>` and
-   `PublicApiBaseUrl=<HttpApiEndpoint>`.
-4. Restrict the Kakao JavaScript key to the emitted Amplify hostname.
+1. Deploy once with the required parameters and `EmailOtpEnabled=false`. The
+   user pool remains on Cognito default email with password as its only first
+   authentication factor.
+2. Click the SES verification messages for `SesFromEmail` and every pilot
+   sandbox recipient, then confirm all identities are verified in the SES console.
+3. Copy the `AmplifyBranchUrl` and `HttpApiEndpoint` outputs and restrict the
+   Kakao JavaScript key to the emitted Amplify hostname.
+4. Deploy again with `EmailOtpEnabled=true`,
+   `CorsAllowedOrigin=<AmplifyBranchUrl>` and
+   `PublicApiBaseUrl=<HttpApiEndpoint>`. This switches Cognito to the verified
+   SES identity and enables `EMAIL_OTP`.
 
 `PilotUrl` contains the private shared path. The slug is not an authentication
 boundary. Cognito is required only for follows, push registrations and owner
@@ -49,3 +58,7 @@ pnpm --filter @honor/infra synth
 The two AWS Budgets are USD guardrails using a fixed pilot assumption of
 1 USD ~= 1,400 KRW: USD 7 approximates KRW 10,000 and USD 21 approximates KRW
 30,000. Update these values when the exchange-rate assumption materially drifts.
+For the first deployment, both budgets filter on `Environment=pilot`, which is
+already active as a user-defined cost-allocation tag. After the stack creates
+resources tagged `Application=honor-benefits`, follow the runbook to activate
+`Application` and tighten the filter.

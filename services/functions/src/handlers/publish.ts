@@ -35,6 +35,9 @@ export function createPublishHandler(
   return (event: HttpEvent): Promise<HttpResult> => withHttpErrors(async () => {
     requireAdmin(event, env);
     if (method(event) !== "POST") throw new HttpError(405, "허용되지 않은 요청입니다.");
+    if (env.PUBLISH_ENABLED?.trim().toLocaleLowerCase("en-US") !== "true") {
+      throw new HttpError(503, "게시 기능이 현재 비활성화되어 있습니다.");
+    }
 
     const changes = (await deps.repository.listChanges(["AUTO_APPROVED", "APPROVED"]))
       .sort((a, b) => a.detectedAt.localeCompare(b.detectedAt) || a.id.localeCompare(b.id));

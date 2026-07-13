@@ -10,6 +10,29 @@ const benefit = normalizeMmaFacility({
 }, now);
 
 describe("publish notification trigger", () => {
+  it("fails closed before reading or writing publish state unless explicitly enabled", async () => {
+    const repository = new FakeRepository();
+    const storage = new FakeStorage();
+    const listChanges = vi.spyOn(repository, "listChanges");
+    const publish = vi.spyOn(storage, "publish");
+    const start = vi.fn(async () => "job-1");
+    const immediate = vi.fn(async () => undefined);
+    const handler = createPublishHandler({
+      repository,
+      storage,
+      deployment: { start },
+      notifications: { immediate },
+      clock: { now: () => new Date(now) },
+    }, { ADMIN_EMAILS: "pilot@example.com" });
+
+    const result = await handler(httpEvent("/v1/admin/publish", "POST"));
+    expect(result.statusCode).toBe(503);
+    expect(listChanges).not.toHaveBeenCalled();
+    expect(publish).not.toHaveBeenCalled();
+    expect(start).not.toHaveBeenCalled();
+    expect(immediate).not.toHaveBeenCalled();
+  });
+
   it("invokes the immediate notification Lambda with published change ids", async () => {
     const repository = new FakeRepository();
     const storage = new FakeStorage();
@@ -24,7 +47,7 @@ describe("publish notification trigger", () => {
       deployment: { start: vi.fn(async () => "job-1") },
       notifications: { immediate },
       clock: { now: () => new Date(now) },
-    }, { ADMIN_EMAILS: "pilot@example.com" });
+    }, { ADMIN_EMAILS: "pilot@example.com", PUBLISH_ENABLED: "true" });
 
     const result = await handler(httpEvent("/v1/admin/publish", "POST"));
     expect(result.statusCode).toBe(202);
