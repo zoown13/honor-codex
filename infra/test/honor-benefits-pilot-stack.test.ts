@@ -283,6 +283,85 @@ describe("HonorBenefitsPilotStack", () => {
     });
   });
 
+  it("supports a two-step Amplify branch migration without losing the app", () => {
+    const synthesized = template.toJSON() as {
+      Parameters: Record<string, unknown>;
+      Conditions: Record<string, unknown>;
+      Rules: Record<string, {
+        Assertions: Array<{ Assert: unknown; AssertDescription: string }>;
+      }>;
+      Resources: Record<string, {
+        Type: string;
+        Condition?: string;
+        Properties: Record<string, unknown>;
+      }>;
+      Outputs: Record<string, { Condition?: string }>;
+    };
+
+    expect(synthesized.Parameters.AmplifyBranchEnabled).toEqual({
+      Type: "String",
+      Default: "true",
+      AllowedValues: ["true", "false"],
+      Description: expect.stringContaining("existing manual-app GitHub migration")
+    });
+    expect(synthesized.Conditions.AmplifyBranchEnabledCondition).toEqual({
+      "Fn::Equals": [{ Ref: "AmplifyBranchEnabled" }, "true"]
+    });
+
+    const appEntry = Object.entries(synthesized.Resources)
+      .find(([, resource]) => resource.Type === "AWS::Amplify::App");
+    const branchEntry = Object.entries(synthesized.Resources)
+      .find(([, resource]) => resource.Type === "AWS::Amplify::Branch");
+    expect(appEntry).toBeDefined();
+    expect(branchEntry).toBeDefined();
+    if (!appEntry || !branchEntry) throw new Error("Amplify app or branch missing");
+
+    const [appLogicalId, appResource] = appEntry;
+    const [, branchResource] = branchEntry;
+    expect(appResource.Properties.Repository).toEqual({
+      "Fn::If": ["HasGitHubConnection", { Ref: "GitHubRepository" }, { Ref: "AWS::NoValue" }]
+    });
+    expect(appResource.Properties.AccessToken).toEqual({
+      "Fn::If": ["HasGitHubConnection", { Ref: "GitHubAccessToken" }, { Ref: "AWS::NoValue" }]
+    });
+    expect(branchResource.Condition).toBe("AmplifyBranchEnabledCondition");
+    expect(branchResource.Properties.AppId).toEqual({
+      "Fn::GetAtt": [appLogicalId, "AppId"]
+    });
+    expect(branchResource.Properties.EnableAutoBuild).toEqual({
+      "Fn::If": ["HasGitHubConnection", true, false]
+    });
+    const branchUrlOutput = synthesized.Outputs.AmplifyBranchUrl;
+    const pilotUrlOutput = synthesized.Outputs.PilotUrl;
+    const githubRule = synthesized.Rules.GitHubConnectionParametersMatch;
+    expect(branchUrlOutput).toBeDefined();
+    expect(pilotUrlOutput).toBeDefined();
+    expect(githubRule).toBeDefined();
+    if (!branchUrlOutput || !pilotUrlOutput || !githubRule) {
+      throw new Error("Conditional Amplify outputs or GitHub rule missing");
+    }
+    expect(branchUrlOutput.Condition).toBe("AmplifyBranchEnabledCondition");
+    expect(pilotUrlOutput.Condition).toBe("AmplifyBranchEnabledCondition");
+    expect(githubRule.Assertions).toHaveLength(1);
+    expect(githubRule.Assertions[0]?.AssertDescription).toContain("must either both be blank");
+    expect(githubRule.Assertions[0]?.Assert).toEqual({
+      "Fn::Or": [
+        {
+          "Fn::And": [
+            { "Fn::Equals": [{ Ref: "GitHubRepository" }, ""] },
+            { "Fn::Equals": [{ Ref: "GitHubAccessToken" }, ""] }
+          ]
+        },
+        {
+          "Fn::And": [
+            { "Fn::Not": [{ "Fn::Equals": [{ Ref: "GitHubRepository" }, ""] }] },
+            { "Fn::Not": [{ "Fn::Equals": [{ Ref: "GitHubAccessToken" }, ""] }] }
+          ]
+        }
+      ]
+    });
+  });
+
   it("provisions only the lean pilot hosting and cost controls", () => {
     template.resourceCountIs("AWS::Amplify::App", 1);
     template.resourceCountIs("AWS::Amplify::Branch", 1);

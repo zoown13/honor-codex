@@ -5,6 +5,7 @@ import {
   CfnCondition,
   CfnOutput,
   CfnParameter,
+  CfnRule,
   Duration,
   Fn,
   RemovalPolicy,
@@ -139,6 +140,19 @@ export class HonorBenefitsPilotStack extends Stack {
       type: "String",
       default: "main",
       allowedPattern: "[A-Za-z0-9._/-]+"
+    });
+    const amplifyBranchEnabled = new CfnParameter(this, "AmplifyBranchEnabled", {
+      type: "String",
+      default: "true",
+      allowedValues: ["true", "false"],
+      description: [
+        "Controls the CloudFormation-managed Amplify branch.",
+        "Set false for the first step of an existing manual-app GitHub migration,",
+        "then true when reconnecting the app and recreating the branch."
+      ].join(" ")
+    });
+    const amplifyBranchEnabledCondition = new CfnCondition(this, "AmplifyBranchEnabledCondition", {
+      expression: Fn.conditionEquals(amplifyBranchEnabled.valueAsString, "true")
     });
     const corsAllowedOrigin = new CfnParameter(this, "CorsAllowedOrigin", {
       type: "String",
@@ -316,6 +330,26 @@ export class HonorBenefitsPilotStack extends Stack {
         Fn.conditionNot(Fn.conditionEquals(githubAccessToken.valueAsString, ""))
       )
     });
+    new CfnRule(this, "GitHubConnectionParametersMatch", {
+      assertions: [
+        {
+          assert: Fn.conditionOr(
+            Fn.conditionAnd(
+              Fn.conditionEquals(githubRepository.valueAsString, ""),
+              Fn.conditionEquals(githubAccessToken.valueAsString, "")
+            ),
+            Fn.conditionAnd(
+              Fn.conditionNot(Fn.conditionEquals(githubRepository.valueAsString, "")),
+              Fn.conditionNot(Fn.conditionEquals(githubAccessToken.valueAsString, ""))
+            )
+          ),
+          assertDescription: [
+            "GitHubRepository and GitHubAccessToken must either both be blank",
+            "or both be supplied."
+          ].join(" ")
+        }
+      ]
+    });
     const amplifyServiceRole = new iam.Role(this, "AmplifyServiceRole", {
       assumedBy: new iam.ServicePrincipal("amplify.amazonaws.com"),
       description: "Allows Amplify builds to read the active pilot dataset."
@@ -423,6 +457,7 @@ export class HonorBenefitsPilotStack extends Stack {
       enableAutoBuild: Fn.conditionIf(hasGitHubConnection.logicalId, true, false),
       enablePullRequestPreview: false
     });
+    amplifyBranch.cfnOptions.condition = amplifyBranchEnabledCondition;
     const amplifyBranchUrl = "https://" + amplifyBranchName.valueAsString + "." + amplifyApp.attrDefaultDomain;
 
     new events.Rule(this, "AmplifyDeploymentFailureRule", {
@@ -845,10 +880,12 @@ export class HonorBenefitsPilotStack extends Stack {
     new CfnOutput(this, "AmplifyBranchNameOutput", { value: amplifyBranchName.valueAsString });
     new CfnOutput(this, "AmplifyBranchUrl", {
       value: amplifyBranchUrl,
-      description: "After the first deploy, use this value for CorsAllowedOrigin."
+      description: "When the branch is enabled, use this value for CorsAllowedOrigin.",
+      condition: amplifyBranchEnabledCondition
     });
     new CfnOutput(this, "PilotUrl", {
-      value: `${amplifyBranchUrl}/pilot/${pilotSlug.valueAsString}`
+      value: `${amplifyBranchUrl}/pilot/${pilotSlug.valueAsString}`,
+      condition: amplifyBranchEnabledCondition
     });
     new CfnOutput(this, "SesConfigurationSetName", {
       value: sesConfigurationSetName

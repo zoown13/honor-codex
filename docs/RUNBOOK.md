@@ -11,6 +11,26 @@
 7. 1차 배포의 `AmplifyBranchUrl`과 `HttpApiEndpoint`를 확인하고 Kakao Developers 앱에 Amplify 호스트를 등록합니다.
 8. `EmailOtpEnabled=true`, `CorsAllowedOrigin=<AmplifyBranchUrl>`, `PublicApiBaseUrl=<HttpApiEndpoint>`로 2차 배포합니다. 이 단계부터 Cognito 이메일 OTP가 활성화됩니다.
 
+## 기존 수동 Amplify 앱을 GitHub에 연결
+
+이미 수동 모드로 배포된 Amplify 앱은 아래 두 번의 CloudFormation 업데이트로 전환합니다. 두 단계를 한 번에 합치지 않고, 두 업데이트 모두에서 여기 적지 않은 기존 파라미터 값을 그대로 유지합니다.
+
+먼저 현재 `AmplifyAppId`, 브랜치 이름, `HttpApiEndpoint`, CORS origin과 안전 스위치 값을 기록하고 인프라 typecheck·test·synth를 통과시킵니다. PAT는 Git에 무시되는 로컬 비밀 파일에만 두고, 비밀값을 가리는 배포 도구가 파일에서 읽게 합니다. 셸 추적을 켜거나, 파라미터·하위 프로세스 인자·오류 메시지에 PAT를 출력해서는 안 됩니다. 이 런북에는 PAT가 포함되는 원시 CLI 명령을 남기지 않습니다.
+
+| 업데이트 | `AmplifyBranchEnabled` | `GitHubRepository` | `GitHubAccessToken` |
+| --- | --- | --- | --- |
+| 1단계 — 수동 브랜치 제거 | `false` | 빈 값 | 빈 값 |
+| 2단계 — GitHub 연결·브랜치 재생성 | `true` | 정확한 HTTPS 저장소 URL | 로컬 비밀 파일에서 읽은 PAT |
+
+1. 1단계 파라미터로 배포하고 스택이 `UPDATE_COMPLETE`가 될 때까지 기다립니다.
+2. 기존 `AmplifyAppId`가 그대로이고 대상 브랜치만 삭제됐는지 확인합니다. 이 단계에서는 `AmplifyBranchUrl`과 `PilotUrl` 출력이 의도적으로 사라지고 파일럿 사이트도 일시적으로 사용할 수 없습니다.
+3. 2단계에서 GitHub 저장소와 토큰을 반드시 함께 전달해 배포합니다. 둘 중 하나만 있으면 CloudFormation 규칙이 리소스 변경 전에 배포를 거부합니다.
+4. 스택이 `UPDATE_COMPLETE`가 된 뒤 앱의 repository, 브랜치 이름, `enableAutoBuild=true`를 확인합니다.
+5. Amplify 빌드가 `SUCCEED`인지 확인하고 복원된 `PilotUrl`에서 404 루트, 비공개 slug 화면, API 호출을 스모크 테스트합니다. 스택 업데이트 성공만으로 전환 완료로 판단하지 않습니다.
+6. 확인이 끝나면 로컬 토큰 파일을 삭제하고 단기 PAT를 폐기합니다.
+
+1단계가 롤백되면 CloudFormation이 기존 수동 브랜치를 복원합니다. 2단계가 롤백되면 브랜치가 없는 1단계 상태로 돌아가므로 연결 문제를 고친 뒤 2단계를 다시 실행합니다. 전환을 포기할 때는 GitHub 파라미터를 둘 다 빈 값으로 두고 `AmplifyBranchEnabled=true`로 수동 브랜치를 다시 만든 다음 정적 산출물을 수동 배포합니다.
+
 ## 게시 안전 가드
 
 - 초기 배포에서는 `PUBLISH_ENABLED=false`를 유지합니다. 값이 누락되거나 `true`가 아니면 게시 API는 부작용 없이 503을 반환합니다.
