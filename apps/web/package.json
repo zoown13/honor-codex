@@ -6,12 +6,13 @@
     "prebuild": "pnpm --filter @honor/core build",
     "dev": "next dev",
     "build": "next build",
+    "postbuild": "node scripts/assert-static-output.mjs",
     "start": "npx serve out",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
-    "lint": "eslint app components data lib tests --max-warnings=0"
+    "lint": "eslint app components data lib scripts tests --max-warnings=0"
   },
   "dependencies": {
     "@honor/core": "workspace:*",
