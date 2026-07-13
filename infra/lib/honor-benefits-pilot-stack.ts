@@ -432,6 +432,7 @@ export class HonorBenefitsPilotStack extends Stack {
         "          - key: Cache-Control",
         "            value: 'public, max-age=60, stale-while-revalidate=86400'"
       ].join("\n"),
+      customRules: [],
       environmentVariables: [
         { name: "AMPLIFY_MONOREPO_APP_ROOT", value: "apps/web" },
         { name: "NEXT_PUBLIC_PILOT_SLUG", value: pilotSlug.valueAsString },
