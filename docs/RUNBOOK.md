@@ -37,6 +37,7 @@
 - 초기 배포에서는 `PUBLISH_ENABLED=false`를 유지합니다. 값이 누락되거나 `true`가 아니면 게시 API는 부작용 없이 503을 반환합니다.
 - Amplify 배포 성공을 확인한 뒤에만 변경을 `PUBLISHED`로 전환하고 알림을 보내는 성공 게이트가 구현·검증되기 전에는 이 값을 `true`로 바꾸지 않습니다.
 - Amplify BuildSpec은 웹 단위 테스트, 정적 빌드, 404 및 파일럿 slug HTML 존재 검사를 수행합니다. 이는 빌드 산출물 smoke gate이며 실제 배포 활성화와 브라우저 동작 성공을 증명하지는 않습니다.
+- 모노레포 사용자 지정 헤더는 CDK `CustomHeaders`를 단일 원천으로 사용하고 `applications -> appRoot -> customHeaders` 형식을 유지합니다. `appRoot`와 `AMPLIFY_MONOREPO_APP_ROOT`는 모두 `apps/web`이어야 하며, 별도 `customHttp.yml`은 추가하지 않습니다.
 - 가드가 비활성인 동안에도 수집과 소유자 검수는 계속할 수 있으며 승인된 변경은 게시 대기 상태로 남습니다.
 
 ## 일상 운영

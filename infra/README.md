@@ -27,6 +27,12 @@ For Git-connected hosting, pass both `GitHubRepository` and
 is supplied. If both are blank, Amplify remains in manual deployment mode;
 upload `apps/web/out` using Amplify's create/start deployment APIs.
 
+Because this is a pnpm monorepo, the CDK `CustomHeaders` property is the
+single source of truth and uses Amplify's `applications -> appRoot ->
+customHeaders` schema. The header and build-spec `appRoot` values and
+`AMPLIFY_MONOREPO_APP_ROOT` must all remain `apps/web`. Do not add a
+repository `customHttp.yml`; it would create a competing header source.
+
 `AmplifyBranchEnabled` defaults to `true`. It controls whether the
 CloudFormation-managed `AWS::Amplify::Branch` exists; it is an operational
 migration control, not an application feature flag.
