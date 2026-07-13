@@ -709,12 +709,12 @@ export class HonorBenefitsPilotStack extends Stack {
       "PublishIntegration",
       publishFunction
     );
-    httpApi.addRoutes({
+    const authOtpStartRoutes = httpApi.addRoutes({
       path: "/v1/auth/otp/start",
       methods: [apigwv2.HttpMethod.POST],
       integration: authOtpIntegration
     });
-    httpApi.addRoutes({
+    const authOtpVerifyRoutes = httpApi.addRoutes({
       path: "/v1/auth/otp/verify",
       methods: [apigwv2.HttpMethod.POST],
       integration: authOtpIntegration
@@ -769,6 +769,13 @@ export class HonorBenefitsPilotStack extends Stack {
     const defaultStage = httpApi.defaultStage?.node.defaultChild as apigwv2.CfnStage | undefined;
     if (defaultStage === undefined) {
       throw new Error("The HTTP API default stage was not created.");
+    }
+    for (const route of [...authOtpStartRoutes, ...authOtpVerifyRoutes]) {
+      const cfnRoute = route.node.defaultChild as apigwv2.CfnRoute | undefined;
+      if (cfnRoute === undefined) {
+        throw new Error("An HTTP API OTP route was not created.");
+      }
+      defaultStage.addDependency(cfnRoute);
     }
     defaultStage.defaultRouteSettings = {
       throttlingBurstLimit: 20,
