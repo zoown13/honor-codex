@@ -60,10 +60,14 @@ CLI command.
    references the existing app through `Fn::GetAtt AppId`, and auto-build is
    enabled only when the GitHub connection condition is true.
 4. Wait for `UPDATE_COMPLETE`, then verify the app repository, branch name,
-   `enableAutoBuild=true`, a successful Amplify build, and the restored pilot
-   URL. A CloudFormation success without a successful Amplify build is not a
-   completed migration.
-5. Remove the local token file and revoke the short-lived PAT after the
+   and `enableAutoBuild=true`. If branch creation produced no build job, confirm
+   the empty job list and either start a `RELEASE` through an authorized
+   operational path or merge a verified normal change to `main` through a pull
+   request. Do not push directly to `main` only to trigger a build.
+5. Verify a successful Amplify build and the restored pilot URL. A
+   CloudFormation success without a successful Amplify build is not a completed
+   migration.
+6. Remove the local token file and revoke the short-lived PAT after the
    connection and build have been verified.
 
 If update 1 rolls back, CloudFormation restores the prior manual branch. If
