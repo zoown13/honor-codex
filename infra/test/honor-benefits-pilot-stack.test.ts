@@ -169,6 +169,36 @@ describe("HonorBenefitsPilotStack", () => {
     });
   });
 
+  it("creates the HTTP API stage after OTP routes used in route settings", () => {
+    const resources = (template.toJSON() as {
+      Resources: Record<string, {
+        Type: string;
+        Properties?: Record<string, unknown>;
+        DependsOn?: string | string[];
+      }>;
+    }).Resources;
+    const otpRouteKeys = new Set([
+      "POST /v1/auth/otp/start",
+      "POST /v1/auth/otp/verify"
+    ]);
+    const otpRouteLogicalIds = Object.entries(resources)
+      .filter(([, resource]) =>
+        resource.Type === "AWS::ApiGatewayV2::Route" &&
+        otpRouteKeys.has(String(resource.Properties?.RouteKey))
+      )
+      .map(([logicalId]) => logicalId);
+    expect(otpRouteLogicalIds).toHaveLength(2);
+
+    const stageResource = Object.values(resources)
+      .find(({ Type }) => Type === "AWS::ApiGatewayV2::Stage");
+    expect(stageResource).toBeDefined();
+    const stageDependsOn = stageResource?.DependsOn;
+    const normalizedDependsOn = stageDependsOn === undefined
+      ? []
+      : Array.isArray(stageDependsOn) ? stageDependsOn : [stageDependsOn];
+    expect(normalizedDependsOn).toEqual(expect.arrayContaining(otpRouteLogicalIds));
+  });
+
   it("runs nine Node.js 24 ARM Lambdas with schedules, DLQs and alarms", () => {
     template.resourceCountIs("AWS::Lambda::Function", 9);
     template.allResourcesProperties("AWS::Lambda::Function", {
