@@ -10,7 +10,7 @@
   "scripts": {
     "dev": "pnpm --filter @honor/web dev",
     "build": "pnpm -r --if-present build",
-    "typecheck": "pnpm -r --if-present typecheck",
+    "typecheck": "pnpm --filter @honor/core build && pnpm -r --if-present typecheck",
     "test": "pnpm -r --if-present test",
     "test:e2e": "pnpm --filter @honor/web test:e2e",
     "lint": "pnpm -r --if-present lint",
