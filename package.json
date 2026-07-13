@@ -1,0 +1,27 @@
+{
+  "name": "honor-benefits-pilot",
+  "version": "0.1.0",
+  "private": true,
+  "description": "병역명문가 혜택찾기 비공개 파일럿",
+  "packageManager": "pnpm@11.5.3",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "dev": "pnpm --filter @honor/web dev",
+    "build": "pnpm -r --if-present build",
+    "typecheck": "pnpm -r --if-present typecheck",
+    "test": "pnpm -r --if-present test",
+    "test:e2e": "pnpm --filter @honor/web test:e2e",
+    "lint": "pnpm -r --if-present lint",
+    "cdk:synth": "pnpm --filter @honor/infra synth",
+    "ci": "pnpm lint && pnpm typecheck && pnpm test && pnpm build && pnpm cdk:synth"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.1",
+    "eslint": "^9.39.1",
+    "eslint-plugin-react-hooks": "^7.0.1",
+    "typescript": "5.9.3",
+    "typescript-eslint": "^8.49.0"
+  }
+}

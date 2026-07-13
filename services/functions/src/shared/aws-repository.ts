@@ -1,0 +1,269 @@
+import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
+import {
+  BatchWriteCommand,
+  DeleteCommand,
+  DynamoDBDocumentClient,
+  GetCommand,
+  PutCommand,
+  QueryCommand,
+  ScanCommand,
+  UpdateCommand,
+} from "@aws-sdk/lib-dynamodb";
+import type { BenefitChange, PushSubscriptionRecord } from "@honor/core";
+import type { AppRepository, DeliveryReservation, StoredSubscription } from "./contracts.js";
+
+interface RepositoryOptions {
+  tableName: string;
+  client?: DynamoDBDocumentClient;
+}
+
+export class DynamoAppRepository implements AppRepository {
+  readonly #tableName: string;
+  readonly #client: DynamoDBDocumentClient;
+
+  constructor(options: RepositoryOptions) {
+    if (!options.tableName.trim()) throw new Error("TABLE_NAME is required");
+    this.#tableName = options.tableName;
+    this.#client = options.client ?? DynamoDBDocumentClient.from(new DynamoDBClient({}), {
+      marshallOptions: { removeUndefinedValues: true },
+    });
+  }
+
+  async listSubscriptions(userId: string): Promise<StoredSubscription[]> {
+    return (await this.#queryPartition(userPk(userId), "SUB#")).map((item) => fromItem<StoredSubscription>(item));
+  }
+
+  async putSubscription(value: StoredSubscription): Promise<void> {
+    await this.#client.send(new PutCommand({
+      TableName: this.#tableName,
+      Item: { pk: userPk(value.userId), sk: `SUB#${value.id}`, entityType: "SUBSCRIPTION", ...value },
+    }));
+  }
+
+  async deleteSubscription(userId: string, subscriptionId: string): Promise<boolean> {
+    const result = await this.#client.send(new DeleteCommand({
+      TableName: this.#tableName,
+      Key: { pk: userPk(userId), sk: `SUB#${subscriptionId}` },
+      ReturnValues: "ALL_OLD",
+    }));
+    return result.Attributes !== undefined;
+  }
+
+  async listAllSubscriptions(): Promise<StoredSubscription[]> {
+    return (await this.#scanEntity("SUBSCRIPTION")).map((item) => fromItem<StoredSubscription>(item));
+  }
+
+  async putPushSubscription(value: PushSubscriptionRecord): Promise<void> {
+    await this.#client.send(new PutCommand({
+      TableName: this.#tableName,
+      Item: { pk: userPk(value.userId), sk: `PUSH#${value.id}`, entityType: "PUSH_SUBSCRIPTION", ...value },
+    }));
+  }
+
+  async listPushSubscriptions(userId: string): Promise<PushSubscriptionRecord[]> {
+    return (await this.#queryPartition(userPk(userId), "PUSH#")).map((item) => fromItem<PushSubscriptionRecord>(item));
+  }
+
+  async deletePushSubscription(userId: string, pushId: string): Promise<boolean> {
+    const result = await this.#client.send(new DeleteCommand({
+      TableName: this.#tableName,
+      Key: { pk: userPk(userId), sk: `PUSH#${pushId}` },
+      ReturnValues: "ALL_OLD",
+    }));
+    return result.Attributes !== undefined;
+  }
+
+  async deleteUserData(userId: string): Promise<number> {
+    const items = [
+      ...await this.#queryPartition(userPk(userId)),
+      ...await this.#queryPartition(`DELIVERY#${userId}`),
+    ];
+    for (let index = 0; index < items.length; index += 25) {
+      let requests = items.slice(index, index + 25).map((item) => ({
+        DeleteRequest: { Key: { pk: item.pk, sk: item.sk } },
+      }));
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        const result = await this.#client.send(new BatchWriteCommand({
+          RequestItems: { [this.#tableName]: requests },
+        }));
+        requests = (result.UnprocessedItems?.[this.#tableName] ?? []) as typeof requests;
+        if (!requests.length) break;
+        if (attempt === 4) throw new Error("DynamoDB did not process all account deletions");
+        await new Promise((resolve) => setTimeout(resolve, 25 * 2 ** attempt));
+      }
+    }
+    return items.length;
+  }
+
+  async putChanges(changes: readonly BenefitChange[]): Promise<number> {
+    let inserted = 0;
+    for (const change of changes) {
+      try {
+        await this.#client.send(new PutCommand({
+          TableName: this.#tableName,
+          Item: { pk: "CHANGE", sk: `CHG#${change.id}`, entityType: "BENEFIT_CHANGE", ...change },
+          ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)",
+        }));
+        inserted += 1;
+      } catch (error) {
+        if (!isConditionalFailure(error)) throw error;
+      }
+    }
+    return inserted;
+  }
+
+  async listChanges(statuses?: readonly BenefitChange["status"][]): Promise<BenefitChange[]> {
+    const values: BenefitChange[] = [];
+    let startKey: Record<string, unknown> | undefined;
+    do {
+      const result = await this.#client.send(new QueryCommand({
+        TableName: this.#tableName,
+        KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)",
+        ExpressionAttributeValues: { ":pk": "CHANGE", ":prefix": "CHG#" },
+        ...(startKey ? { ExclusiveStartKey: startKey } : {}),
+      }));
+      values.push(...(result.Items ?? []).map((item) => fromItem<BenefitChange>(item)));
+      startKey = result.LastEvaluatedKey as Record<string, unknown> | undefined;
+    } while (startKey);
+    return values
+      .filter((item) => !statuses?.length || statuses.includes(item.status))
+      .sort((a, b) => b.detectedAt.localeCompare(a.detectedAt));
+  }
+
+  async getChange(changeId: string): Promise<BenefitChange | undefined> {
+    const result = await this.#client.send(new GetCommand({
+      TableName: this.#tableName,
+      Key: { pk: "CHANGE", sk: `CHG#${changeId}` },
+      ConsistentRead: true,
+    }));
+    return result.Item ? fromItem<BenefitChange>(result.Item) : undefined;
+  }
+
+  async reviewChange(
+    changeId: string,
+    decision: "APPROVED" | "REJECTED",
+    reviewer: string,
+    at: string,
+  ): Promise<BenefitChange> {
+    try {
+      const result = await this.#client.send(new UpdateCommand({
+        TableName: this.#tableName,
+        Key: { pk: "CHANGE", sk: `CHG#${changeId}` },
+        UpdateExpression: "SET #status = :decision, reviewedAt = :at, reviewedBy = :reviewer",
+        ConditionExpression: "attribute_exists(pk) AND #status = :pending",
+        ExpressionAttributeNames: { "#status": "status" },
+        ExpressionAttributeValues: { ":decision": decision, ":at": at, ":reviewer": reviewer, ":pending": "PENDING" },
+        ReturnValues: "ALL_NEW",
+      }));
+      if (!result.Attributes) throw new Error("Review update returned no item");
+      return fromItem<BenefitChange>(result.Attributes);
+    } catch (error) {
+      if (isConditionalFailure(error)) throw new Error("Change was not found or is no longer pending");
+      throw error;
+    }
+  }
+
+  async markChangesPublished(changeIds: readonly string[], at: string): Promise<void> {
+    for (const id of changeIds) {
+      await this.#client.send(new UpdateCommand({
+        TableName: this.#tableName,
+        Key: { pk: "CHANGE", sk: `CHG#${id}` },
+        UpdateExpression: "SET #status = :published, publishedAt = :at",
+        ConditionExpression: "#status IN (:approved, :auto)",
+        ExpressionAttributeNames: { "#status": "status" },
+        ExpressionAttributeValues: {
+          ":published": "PUBLISHED", ":at": at, ":approved": "APPROVED", ":auto": "AUTO_APPROVED",
+        },
+      }));
+    }
+  }
+
+  async reserveDelivery(value: DeliveryReservation): Promise<boolean> {
+    try {
+      await this.#client.send(new PutCommand({
+        TableName: this.#tableName,
+        Item: {
+          pk: `DELIVERY#${value.userId}`,
+          sk: `DELIVERY#${value.idempotencyKey}`,
+          entityType: "DELIVERY",
+          ...value,
+        },
+        ConditionExpression: "attribute_not_exists(pk) OR #status = :failed",
+        ExpressionAttributeNames: { "#status": "status" },
+        ExpressionAttributeValues: { ":failed": "FAILED" },
+      }));
+      return true;
+    } catch (error) {
+      if (isConditionalFailure(error)) return false;
+      throw error;
+    }
+  }
+
+  async finishDelivery(
+    userId: string,
+    key: string,
+    status: "SENT" | "FAILED",
+    at: string,
+    error?: string,
+  ): Promise<void> {
+    await this.#client.send(new UpdateCommand({
+      TableName: this.#tableName,
+      Key: { pk: `DELIVERY#${userId}`, sk: `DELIVERY#${key}` },
+      UpdateExpression: error
+        ? "SET #status = :status, updatedAt = :at, #error = :error"
+        : "SET #status = :status, updatedAt = :at REMOVE #error",
+      ExpressionAttributeNames: { "#status": "status", "#error": "error" },
+      ExpressionAttributeValues: {
+        ":status": status,
+        ":at": at,
+        ...(error ? { ":error": error.slice(0, 500) } : {}),
+      },
+    }));
+  }
+
+  async #queryPartition(pk: string, prefix?: string): Promise<Record<string, unknown>[]> {
+    const output: Record<string, unknown>[] = [];
+    let startKey: Record<string, unknown> | undefined;
+    do {
+      const result = await this.#client.send(new QueryCommand({
+        TableName: this.#tableName,
+        KeyConditionExpression: prefix ? "pk = :pk AND begins_with(sk, :prefix)" : "pk = :pk",
+        ExpressionAttributeValues: { ":pk": pk, ...(prefix ? { ":prefix": prefix } : {}) },
+        ...(startKey ? { ExclusiveStartKey: startKey } : {}),
+      }));
+      output.push(...((result.Items ?? []) as Record<string, unknown>[]));
+      startKey = result.LastEvaluatedKey as Record<string, unknown> | undefined;
+    } while (startKey);
+    return output;
+  }
+
+  async #scanEntity(entityType: string): Promise<Record<string, unknown>[]> {
+    const output: Record<string, unknown>[] = [];
+    let startKey: Record<string, unknown> | undefined;
+    do {
+      const result = await this.#client.send(new ScanCommand({
+        TableName: this.#tableName,
+        FilterExpression: "entityType = :entityType",
+        ExpressionAttributeValues: { ":entityType": entityType },
+        ...(startKey ? { ExclusiveStartKey: startKey } : {}),
+      }));
+      output.push(...((result.Items ?? []) as Record<string, unknown>[]));
+      startKey = result.LastEvaluatedKey as Record<string, unknown> | undefined;
+    } while (startKey);
+    return output;
+  }
+}
+
+function userPk(userId: string): string {
+  return `USER#${userId}`;
+}
+
+function fromItem<T>(item: Record<string, unknown>): T {
+  const { pk: _pk, sk: _sk, entityType: _entityType, ...value } = item;
+  return value as T;
+}
+
+function isConditionalFailure(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "name" in error
+    && (error as { name?: string }).name === "ConditionalCheckFailedException";
+}
