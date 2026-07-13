@@ -434,7 +434,7 @@ export class HonorBenefitsPilotStack extends Stack {
       ].join("\n"),
       customRules: [
         {
-          source: "/",
+          source: "/<*>",
           target: "/404.html",
           status: "404"
         }

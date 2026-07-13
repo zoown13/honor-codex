@@ -373,7 +373,7 @@ describe("HonorBenefitsPilotStack", () => {
         Match.objectLike({ Name: "NEXT_PUBLIC_VAPID_PUBLIC_KEY" })
       ]),
       CustomRules: Match.arrayWith([
-        Match.objectLike({ Source: "/", Target: "/404.html", Status: "404" })
+        Match.objectLike({ Source: "/<*>", Target: "/404.html", Status: "404" })
       ])
     });
     const amplifyApp = Object.values(template.findResources("AWS::Amplify::App"))[0] as {
