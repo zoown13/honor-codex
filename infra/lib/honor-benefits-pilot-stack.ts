@@ -35,6 +35,7 @@ import { Construct } from "constructs";
 
 interface PilotFunctionOptions {
   readonly entry: string;
+  readonly environment: Record<string, string>;
   readonly memorySize?: number;
   readonly timeout?: Duration;
 }
@@ -48,7 +49,10 @@ interface PilotFunctionOptions {
  */
 export class HonorBenefitsPilotStack extends Stack {
   public constructor(scope: Construct, id: string, props: StackProps = {}) {
-    super(scope, id, props);
+    super(scope, id, {
+      ...props,
+      terminationProtection: props.terminationProtection ?? true
+    });
 
     if (Stack.of(this).region !== "ap-northeast-2" && !Stack.of(this).region.includes("${Token")) {
       throw new Error("The pilot stack must be deployed in ap-northeast-2.");
@@ -84,7 +88,16 @@ export class HonorBenefitsPilotStack extends Stack {
     const sesFromEmail = new CfnParameter(this, "SesFromEmail", {
       type: "String",
       allowedPattern: "[^@\\s]+@[^@\\s]+\\.[^@\\s]+",
-      description: "SES sandbox-verified sender used for weekly notification email."
+      description: "SES sender for weekly notifications and email OTP after identity and sandbox recipient verification."
+    });
+    const emailOtpEnabled = new CfnParameter(this, "EmailOtpEnabled", {
+      type: "String",
+      default: "false",
+      allowedValues: ["true", "false"],
+      description: "Enable Cognito email OTP only after the SES sender identity and all sandbox recipient emails are verified."
+    });
+    const emailOtpEnabledCondition = new CfnCondition(this, "EmailOtpEnabledCondition", {
+      expression: Fn.conditionEquals(emailOtpEnabled.valueAsString, "true")
     });
     const lawApiOc = new CfnParameter(this, "LawApiOc", {
       type: "String",
@@ -227,15 +240,17 @@ export class HonorBenefitsPilotStack extends Stack {
       configurationSetAttributes: { configurationSetName: sesConfigurationSetName }
     });
     sesIdentity.addDependency(sesConfigurationSet);
+    const sesIdentityArn = this.formatArn({
+      service: "ses",
+      resource: "identity",
+      resourceName: sesFromEmail.valueAsString,
+      arnFormat: ArnFormat.SLASH_RESOURCE_NAME
+    });
 
     const userPool = new cognito.UserPool(this, "UserPool", {
       userPoolName: "honor-benefits-pilot",
       selfSignUpEnabled: false,
-      email: cognito.UserPoolEmail.withSES({
-        fromEmail: sesFromEmail.valueAsString,
-        fromName: "병역명문가 혜택찾기",
-        sesRegion: this.region
-      }),
+      email: cognito.UserPoolEmail.withCognito(),
       signInAliases: { email: true },
       signInCaseSensitive: false,
       autoVerify: { email: true },
@@ -243,17 +258,41 @@ export class HonorBenefitsPilotStack extends Stack {
       featurePlan: cognito.FeaturePlan.ESSENTIALS,
       signInPolicy: {
         allowedFirstAuthFactors: {
-          password: true,
-          emailOtp: true
+          password: true
         }
-      },
-      userVerification: {
-        emailStyle: cognito.VerificationEmailStyle.CODE,
-        emailSubject: "병역명문가 혜택찾기 이메일 확인 코드",
-        emailBody: "확인 코드는 {####}입니다."
       },
       removalPolicy: RemovalPolicy.RETAIN
     });
+    const cfnUserPool = userPool.node.defaultChild as cognito.CfnUserPool;
+    cfnUserPool.emailConfiguration = Fn.conditionIf(
+      emailOtpEnabledCondition.logicalId,
+      {
+        EmailSendingAccount: "DEVELOPER",
+        SourceArn: sesIdentityArn,
+        From: sesFromEmail.valueAsString,
+        ConfigurationSet: sesConfigurationSetName
+      },
+      {
+        EmailSendingAccount: "COGNITO_DEFAULT"
+      }
+    );
+    cfnUserPool.policies = Fn.conditionIf(
+      emailOtpEnabledCondition.logicalId,
+      {
+        SignInPolicy: {
+          AllowedFirstAuthFactors: ["PASSWORD", "EMAIL_OTP"]
+        }
+      },
+      {
+        SignInPolicy: {
+          AllowedFirstAuthFactors: ["PASSWORD"]
+        }
+      }
+    );
+    cfnUserPool.addPropertyDeletionOverride("EmailVerificationMessage");
+    cfnUserPool.addPropertyDeletionOverride("EmailVerificationSubject");
+    cfnUserPool.addPropertyDeletionOverride("VerificationMessageTemplate.EmailMessage");
+    cfnUserPool.addPropertyDeletionOverride("VerificationMessageTemplate.EmailSubject");
     userPool.node.addDependency(sesIdentity);
     const userPoolClient = userPool.addClient("WebClient", {
       userPoolClientName: "honor-benefits-pilot-web",
@@ -315,7 +354,10 @@ export class HonorBenefitsPilotStack extends Stack {
         "          commands:",
         "            - mkdir -p apps/web/public/data",
         "            - aws s3 sync \"s3://$DATA_BUCKET/$DATA_PREFIX\" apps/web/public/data",
+        "            - pnpm --filter @honor/web test",
         "            - pnpm --filter @honor/web build",
+        "            - test -f apps/web/out/404.html",
+        "            - test -f \"apps/web/out/pilot/$NEXT_PUBLIC_PILOT_SLUG/index.html\"",
         "      artifacts:",
         "        baseDirectory: apps/web/out",
         "        files:",
@@ -330,7 +372,29 @@ export class HonorBenefitsPilotStack extends Stack {
         "  - pattern: '**/*'",
         "    headers:",
         "      - key: X-Robots-Tag",
-        "        value: 'noindex, nofollow'"
+        "        value: 'noindex, nofollow, noarchive'",
+        "      - key: Strict-Transport-Security",
+        "        value: 'max-age=31536000; includeSubDomains'",
+        "      - key: Content-Security-Policy",
+        "        value: \"default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self' 'unsafe-inline' https://dapi.kakao.com https://*.daumcdn.net; style-src 'self' 'unsafe-inline' https://*.daumcdn.net; img-src 'self' data: blob: https://*.kakao.com https://*.daum.net https://*.daumcdn.net; font-src 'self' data:; connect-src 'self' https://*.execute-api.ap-northeast-2.amazonaws.com https://dapi.kakao.com https://*.kakao.com https://*.daum.net; worker-src 'self' blob:; manifest-src 'self'; frame-src 'self' https://*.kakao.com https://*.daum.net; upgrade-insecure-requests\"",
+        "      - key: Referrer-Policy",
+        "        value: 'strict-origin-when-cross-origin'",
+        "      - key: Permissions-Policy",
+        "        value: 'geolocation=(self), camera=(), microphone=(), payment=(), usb=()'",
+        "      - key: X-Content-Type-Options",
+        "        value: 'nosniff'",
+        "      - key: X-Frame-Options",
+        "        value: 'DENY'",
+        "      - key: Cross-Origin-Opener-Policy",
+        "        value: 'same-origin-allow-popups'",
+        "      - key: Cross-Origin-Resource-Policy",
+        "        value: 'same-site'",
+        "      - key: X-Permitted-Cross-Domain-Policies",
+        "        value: 'none'",
+        "  - pattern: '/data/**'",
+        "    headers:",
+        "      - key: Cache-Control",
+        "        value: 'public, max-age=60, stale-while-revalidate=86400'"
       ].join("\n"),
       customRules: [
         {
@@ -374,30 +438,13 @@ export class HonorBenefitsPilotStack extends Stack {
       targets: [new targets.SnsTopic(alarmTopic)]
     });
 
-    const commonEnvironment: Record<string, string> = {
-      PILOT_SLUG: pilotSlug.valueAsString,
-      PUBLIC_APP_URL: amplifyBranchUrl,
-      VAPID_SUBJECT: vapidSubject.valueAsString,
-      VAPID_PUBLIC_KEY: vapidPublicKey.valueAsString,
-      VAPID_PRIVATE_KEY: vapidPrivateKey.valueAsString,
-      TABLE_NAME: table.tableName,
-      GSI_NAME: "gsi1",
+    const repositoryEnvironment: Record<string, string> = {
+      TABLE_NAME: table.tableName
+    };
+    const datasetEnvironment: Record<string, string> = {
       DATA_BUCKET: dataBucket.bucketName,
       DATA_PREFIX: "published/",
-      RAW_PREFIX: "raw/",
-      MMA_LIVE_INGESTION_ENABLED: mmaLiveIngestionEnabled.valueAsString,
-      MMA_FACILITIES_URL: mmaFacilitiesUrl.valueAsString,
-      MMA_NOTICES_URL: mmaNoticesUrl.valueAsString,
-      LAW_API_OC: lawApiOc.valueAsString,
-      LAW_API_BASE_URL: lawApiBaseUrl.valueAsString,
-      SES_FROM_EMAIL: sesFromEmail.valueAsString,
-      SES_CONFIGURATION_SET: sesConfigurationSetName,
-      AMPLIFY_APP_ID: amplifyApp.attrAppId,
-      AMPLIFY_BRANCH: amplifyBranchName.valueAsString,
-      USER_POOL_ID: userPool.userPoolId,
-      USER_POOL_CLIENT_ID: userPoolClient.userPoolClientId,
-      PILOT_ALLOWED_EMAILS: pilotAllowedEmails.valueAsString,
-      ADMIN_EMAILS: adminEmails.valueAsString
+      RAW_PREFIX: "raw/"
     };
     const repoRoot = path.resolve(__dirname, "../..");
     const functionEntriesRoot = path.join(repoRoot, "services/functions/src/handlers");
@@ -421,7 +468,7 @@ export class HonorBenefitsPilotStack extends Stack {
         memorySize: options.memorySize ?? 256,
         timeout: options.timeout ?? Duration.seconds(30),
         logGroup,
-        environment: commonEnvironment,
+        environment: options.environment,
         deadLetterQueue: dlq,
         retryAttempts: 2,
         bundling: {
@@ -446,38 +493,88 @@ export class HonorBenefitsPilotStack extends Stack {
 
     const facilitiesIngest = createFunction("IngestMmaFacilities", {
       entry: "ingest-mma-facilities.ts",
+      environment: {
+        ...repositoryEnvironment,
+        ...datasetEnvironment,
+        MMA_LIVE_INGESTION_ENABLED: mmaLiveIngestionEnabled.valueAsString,
+        MMA_FACILITIES_URL: mmaFacilitiesUrl.valueAsString
+      },
       memorySize: 1024,
       timeout: Duration.minutes(10)
     });
     const noticesIngest = createFunction("IngestMmaNotices", {
       entry: "ingest-mma-notices.ts",
+      environment: {
+        ...repositoryEnvironment,
+        ...datasetEnvironment,
+        MMA_LIVE_INGESTION_ENABLED: mmaLiveIngestionEnabled.valueAsString,
+        MMA_NOTICES_URL: mmaNoticesUrl.valueAsString
+      },
       memorySize: 512,
       timeout: Duration.minutes(5)
     });
     const ordinancesIngest = createFunction("IngestOrdinances", {
       entry: "ingest-ordinances.ts",
+      environment: {
+        ...repositoryEnvironment,
+        ...datasetEnvironment,
+        LAW_API_OC: lawApiOc.valueAsString,
+        LAW_API_BASE_URL: lawApiBaseUrl.valueAsString
+      },
       memorySize: 512,
       timeout: Duration.minutes(10)
     });
     const subscriptionsFunction = createFunction("Subscriptions", {
-      entry: "subscriptions.ts"
+      entry: "subscriptions.ts",
+      environment: repositoryEnvironment
     });
     const authOtpFunction = createFunction("AuthOtp", {
-      entry: "auth-otp.ts"
+      entry: "auth-otp.ts",
+      environment: {
+        USER_POOL_ID: userPool.userPoolId,
+        USER_POOL_CLIENT_ID: userPoolClient.userPoolClientId,
+        PILOT_ALLOWED_EMAILS: pilotAllowedEmails.valueAsString,
+        ADMIN_EMAILS: adminEmails.valueAsString
+      }
     });
     const pushSubscriptionsFunction = createFunction("PushSubscriptions", {
-      entry: "push-subscriptions.ts"
+      entry: "push-subscriptions.ts",
+      environment: {
+        ...repositoryEnvironment,
+        USER_POOL_ID: userPool.userPoolId
+      }
     });
     const adminReviewsFunction = createFunction("AdminReviews", {
-      entry: "admin-reviews.ts"
+      entry: "admin-reviews.ts",
+      environment: {
+        ...repositoryEnvironment,
+        ADMIN_EMAILS: adminEmails.valueAsString
+      }
     });
     const publishFunction = createFunction("Publish", {
       entry: "publish.ts",
+      environment: {
+        ...repositoryEnvironment,
+        ...datasetEnvironment,
+        AMPLIFY_APP_ID: amplifyApp.attrAppId,
+        AMPLIFY_BRANCH: amplifyBranchName.valueAsString,
+        ADMIN_EMAILS: adminEmails.valueAsString,
+        PUBLISH_ENABLED: "false"
+      },
       memorySize: 512,
       timeout: Duration.minutes(5)
     });
     const weeklyNotificationsFunction = createFunction("WeeklyNotifications", {
       entry: "weekly-notifications.ts",
+      environment: {
+        ...repositoryEnvironment,
+        PILOT_SLUG: pilotSlug.valueAsString,
+        PUBLIC_APP_URL: amplifyBranchUrl,
+        VAPID_SUBJECT: vapidSubject.valueAsString,
+        VAPID_PUBLIC_KEY: vapidPublicKey.valueAsString,
+        VAPID_PRIVATE_KEY: vapidPrivateKey.valueAsString,
+        SES_FROM_EMAIL: sesFromEmail.valueAsString
+      },
       memorySize: 512,
       timeout: Duration.minutes(5)
     });
@@ -514,7 +611,12 @@ export class HonorBenefitsPilotStack extends Stack {
     weeklyNotificationsFunction.addToRolePolicy(
       new iam.PolicyStatement({
         actions: ["ses:SendEmail", "ses:SendRawEmail"],
-        resources: ["*"]
+        resources: [sesIdentityArn],
+        conditions: {
+          StringEquals: {
+            "ses:FromAddress": sesFromEmail.valueAsString
+          }
+        }
       })
     );
     publishFunction.addToRolePolicy(
@@ -672,6 +774,16 @@ export class HonorBenefitsPilotStack extends Stack {
       throttlingBurstLimit: 20,
       throttlingRateLimit: 10
     };
+    defaultStage.routeSettings = {
+      "POST /v1/auth/otp/start": {
+        ThrottlingBurstLimit: 2,
+        ThrottlingRateLimit: 1
+      },
+      "POST /v1/auth/otp/verify": {
+        ThrottlingBurstLimit: 5,
+        ThrottlingRateLimit: 2
+      }
+    };
     defaultStage.accessLogSettings = {
       destinationArn: apiAccessLogs.logGroupArn,
       format: JSON.stringify({
@@ -689,7 +801,10 @@ export class HonorBenefitsPilotStack extends Stack {
           budgetName,
           budgetType: "COST",
           timeUnit: "MONTHLY",
-          budgetLimit: { amount: usdAmount, unit: "USD" }
+          budgetLimit: { amount: usdAmount, unit: "USD" },
+          costFilters: {
+            TagKeyValue: ["user:Environment$pilot"]
+          }
         },
         notificationsWithSubscribers: [
           {

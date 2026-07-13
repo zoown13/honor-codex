@@ -3,10 +3,20 @@
 ## 최초 준비
 
 1. 128비트 이상 무작위 `PILOT_SLUG`를 생성합니다.
-2. Kakao Developers 앱에 Amplify 기본 도메인을 등록합니다.
-3. 법제처 공동활용에서 자치법규 OPEN API용 `OC`를 발급받습니다.
-4. SES sandbox에서 소유자와 파일럿 사용자의 이메일을 검증합니다.
-5. 병무청 실데이터 수집 사용 조건을 확인하기 전에는 `MMA_LIVE_INGESTION_ENABLED=false`를 유지합니다.
+2. 법제처 공동활용에서 자치법규 OPEN API용 `OC`를 발급받습니다.
+3. 병무청 실데이터 수집 사용 조건을 확인하기 전에는 `MMA_LIVE_INGESTION_ENABLED=false`를 유지합니다.
+4. `EmailOtpEnabled=false`로 1차 배포합니다. 이 단계에서는 Cognito가 SES를 사용하지 않고 비밀번호 인증만 허용합니다.
+5. `SesFromEmail`로 도착한 SES 발신 identity 검증 메일과 소유자 및 모든 파일럿 사용자의 sandbox 수신자 검증 메일을 각각 클릭합니다.
+6. SES 콘솔에서 발신 identity와 모든 sandbox 수신자의 상태가 검증 완료인지 확인합니다.
+7. 1차 배포의 `AmplifyBranchUrl`과 `HttpApiEndpoint`를 확인하고 Kakao Developers 앱에 Amplify 호스트를 등록합니다.
+8. `EmailOtpEnabled=true`, `CorsAllowedOrigin=<AmplifyBranchUrl>`, `PublicApiBaseUrl=<HttpApiEndpoint>`로 2차 배포합니다. 이 단계부터 Cognito 이메일 OTP가 활성화됩니다.
+
+## 게시 안전 가드
+
+- 초기 배포에서는 `PUBLISH_ENABLED=false`를 유지합니다. 값이 누락되거나 `true`가 아니면 게시 API는 부작용 없이 503을 반환합니다.
+- Amplify 배포 성공을 확인한 뒤에만 변경을 `PUBLISHED`로 전환하고 알림을 보내는 성공 게이트가 구현·검증되기 전에는 이 값을 `true`로 바꾸지 않습니다.
+- Amplify BuildSpec은 웹 단위 테스트, 정적 빌드, 404 및 파일럿 slug HTML 존재 검사를 수행합니다. 이는 빌드 산출물 smoke gate이며 실제 배포 활성화와 브라우저 동작 성공을 증명하지는 않습니다.
+- 가드가 비활성인 동안에도 수집과 소유자 검수는 계속할 수 있으며 승인된 변경은 게시 대기 상태로 남습니다.
 
 ## 일상 운영
 
@@ -27,6 +37,20 @@
 현재 파일럿 관리자 화면은 검수·승인·게시 시작을 지원하며, S3 버전 선택 롤백은 소유자가 AWS 콘솔 또는 CLI에서 수행합니다.
 
 ## 비용 이상
+
+### 비용 할당 태그 활성화
+
+1. 최초 배포 예산은 현재 활성화된 `Environment=pilot` 태그로 필터링됩니다.
+2. 최초 배포 후 Billing and Cost Management의 **Cost allocation tags**에서
+   `Application` 키가 나타날 때까지 확인합니다. 새 태그 키가 표시되는 데 최대
+   24시간이 걸릴 수 있습니다.
+3. 사용자 정의 `Application` 태그를 활성화하고 상태가 `Active`가 될 때까지
+   기다립니다. 활성화에도 최대 24시간이 걸릴 수 있습니다.
+4. 활성화 후 예산 필터를 `Application=honor-benefits`까지 좁힙니다. 기존
+   `CostFilters.TagKeyValue`에 서로 다른 태그 키 값을 단순히 함께 넣으면 결합
+   의미가 명확하지 않으므로, 적용 전 AWS Budgets의 생성 결과를 확인하고
+   필요하면 `FilterExpression`의 명시적 `And`로 전환합니다.
+5. 비용 태그가 활성화되기 전에는 필터링된 예산 사용액이 0으로 보일 수 있습니다.
 
 - 월 1만 원 경고: Amplify 빌드 횟수와 CloudWatch 로그량을 확인합니다.
 - 월 3만 원 경고: 스케줄을 일시 중지하고 API 호출·배포 반복 여부를 조사합니다.
