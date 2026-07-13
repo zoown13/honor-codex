@@ -7,9 +7,22 @@ import {
   startOtp,
   verifyOtp
 } from "../lib/api";
+import { API_BASE_URL, IS_MOCK_API } from "../lib/config";
 
 describe("mock subscription adapter", () => {
-  beforeEach(() => localStorage.clear());
+  beforeEach(() => {
+    localStorage.clear();
+    vi.stubGlobal("fetch", vi.fn());
+  });
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("never uses the deployed API during unit tests", async () => {
+    expect(API_BASE_URL).toBe("");
+    expect(IS_MOCK_API).toBe(true);
+    await startOtp("pilot@example.com");
+    expect(fetch).not.toHaveBeenCalled();
+  });
 
   it("requires the pilot OTP and persists a session", async () => {
     const challenge = await startOtp("pilot@example.com");
