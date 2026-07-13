@@ -372,9 +372,7 @@ describe("HonorBenefitsPilotStack", () => {
         Match.objectLike({ Name: "NEXT_PUBLIC_KAKAO_MAP_APP_KEY" }),
         Match.objectLike({ Name: "NEXT_PUBLIC_VAPID_PUBLIC_KEY" })
       ]),
-      CustomRules: Match.arrayWith([
-        Match.objectLike({ Source: "/<*>", Target: "/404.html", Status: "404" })
-      ])
+      CustomRules: Match.absent()
     });
     const amplifyApp = Object.values(template.findResources("AWS::Amplify::App"))[0] as {
       Properties: { BuildSpec: string; CustomHeaders: string };
