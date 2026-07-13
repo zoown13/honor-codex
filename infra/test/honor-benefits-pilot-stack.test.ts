@@ -368,6 +368,7 @@ describe("HonorBenefitsPilotStack", () => {
     template.hasResourceProperties("AWS::Amplify::App", {
       BuildSpec: Match.stringLikeRegexp("aws s3 sync"),
       EnvironmentVariables: Match.arrayWith([
+        Match.objectLike({ Name: "AMPLIFY_MONOREPO_APP_ROOT", Value: "apps/web" }),
         Match.objectLike({ Name: "NEXT_PUBLIC_KAKAO_MAP_APP_KEY" }),
         Match.objectLike({ Name: "NEXT_PUBLIC_VAPID_PUBLIC_KEY" })
       ]),
@@ -386,6 +387,19 @@ describe("HonorBenefitsPilotStack", () => {
     expect(amplifyApp.Properties.BuildSpec.indexOf("pnpm --filter @honor/web test")).toBeLessThan(
       amplifyApp.Properties.BuildSpec.indexOf("pnpm --filter @honor/web build")
     );
+    expect(amplifyApp.Properties.BuildSpec).toContain(
+      ["applications:", "  - appRoot: apps/web", "    frontend:"].join("\n")
+    );
+    expect(amplifyApp.Properties.BuildSpec).toContain("      buildPath: /");
+    expect(amplifyApp.Properties.BuildSpec).toContain(
+      ["      artifacts:", "        baseDirectory: apps/web/out"].join("\n")
+    );
+    expect(
+      amplifyApp.Properties.CustomHeaders.startsWith(
+        ["applications:", "  - appRoot: apps/web", "    customHeaders:"].join("\n")
+      )
+    ).toBe(true);
+    expect(amplifyApp.Properties.CustomHeaders).not.toMatch(/^customHeaders:/);
     expect(amplifyApp.Properties.CustomHeaders).toContain("Content-Security-Policy");
     expect(amplifyApp.Properties.CustomHeaders).toContain("https://dapi.kakao.com");
     expect(amplifyApp.Properties.CustomHeaders).toContain("https://*.execute-api.ap-northeast-2.amazonaws.com");
