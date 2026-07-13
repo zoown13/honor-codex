@@ -70,6 +70,12 @@ CLI command.
    the empty job list and either start a `RELEASE` through an authorized
    operational path or merge a verified normal change to `main` through a pull
    request. Do not push directly to `main` only to trigger a build.
+
+   When Amplify App settings such as BuildSpec, CustomHeaders, or environment
+   variables change with source code, deploy and verify the CDK update before
+   merging the source PR. Otherwise the GitHub webhook can start a build against
+   the previous App settings. If the operator lacks `amplify:StartJob`, use a
+   verified normal PR after the settings update instead of expanding permissions.
 5. Verify a successful Amplify build and the restored pilot URL. A
    CloudFormation success without a successful Amplify build is not a completed
    migration.
