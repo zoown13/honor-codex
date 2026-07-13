@@ -27,5 +27,8 @@ jobs:
       - run: pnpm test
       - run: pnpm build
       - run: pnpm cdk:synth
+        env:
+          AWS_REGION: ap-northeast-2
+          CDK_DEFAULT_REGION: ap-northeast-2
       - run: pnpm --filter @honor/web exec playwright install --with-deps chromium
       - run: pnpm test:e2e
