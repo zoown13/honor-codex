@@ -42,18 +42,42 @@ export function createPublishHandler(
     const changes = (await deps.repository.listChanges(["AUTO_APPROVED", "APPROVED"]))
       .sort((a, b) => a.detectedAt.localeCompare(b.detectedAt) || a.id.localeCompare(b.id));
     if (!changes.length) throw new HttpError(409, "게시할 승인 변경이 없습니다.");
+    const pending = await deps.repository.listChanges(["PENDING"]);
+    if (pending.length) {
+      throw new HttpError(409, `검수 대기 변경 ${pending.length}건을 모두 처리한 뒤 게시해 주세요.`);
+    }
+
     const current = await deps.storage.loadBenefits();
+    const initialBaseline = current.length === 0;
     const items = applyChanges(current, changes);
     const now = (deps.clock ?? systemClock).now().toISOString();
-    const manifest = await deps.storage.publish(items, now);
+    const publication = await deps.storage.publish(items, now);
     const changeIds = changes.map((change) => change.id);
-    const deploymentJobId = await deps.deployment.start();
+    let deploymentJobId: string;
+    try {
+      const startedJobId = await deps.deployment.start();
+      if (!startedJobId) throw new Error("Amplify deployment is not configured");
+      deploymentJobId = startedJobId;
+    } catch (deploymentError) {
+      try {
+        await publication.rollback();
+      } catch (rollbackError) {
+        throw new AggregateError(
+          [deploymentError, rollbackError],
+          "Amplify deployment failed and the manifest rollback also failed",
+        );
+      }
+      throw deploymentError;
+    }
+
     await deps.repository.markChangesPublished(changeIds, now);
-    await deps.notifications.immediate(changeIds);
-    return json(202, {
-      manifest,
+    if (!initialBaseline) await deps.notifications.immediate(changeIds);
+    return json(200, {
+      manifest: publication.manifest,
       publishedChanges: changes.length,
-      ...(deploymentJobId ? { deploymentJobId } : { deploymentSkipped: true }),
+      deploymentJobId,
+      deploymentStatus: "SUCCEED",
+      ...(initialBaseline ? { notificationsSuppressed: true } : {}),
     });
   });
 }
