@@ -18,28 +18,40 @@ const sourceUrlParameters = {
 const cliArgs = process.argv.slice(2);
 if (cliArgs[0] === "--") cliArgs.shift();
 const [mode, source, extraArgument] = cliArgs;
-const supportedModes = new Set(["gate-off", "configure", "gate-on"]);
+const supportedModes = new Set(["gate-off", "configure", "gate-on", "publish-on", "publish-off"]);
 const scheduleParameters = {
   facilities: "FacilitiesIngestionScheduleEnabled",
   notices: "NoticesIngestionScheduleEnabled",
   ordinances: "OrdinancesIngestionScheduleEnabled"
 };
 
+const publishMode = mode === "publish-on" || mode === "publish-off";
 if (extraArgument !== undefined ||
     !supportedModes.has(mode) ||
     (mode === "gate-on" && !(source in scheduleParameters)) ||
-    (mode === "configure" && source !== undefined) ||
+    ((mode === "configure" || publishMode) && source !== undefined) ||
     (mode === "gate-off" && source !== undefined && !(source in scheduleParameters))) {
-  fail("Usage: pnpm deploy:live -- <gate-off [facilities|notices|ordinances]|configure|gate-on <facilities|notices|ordinances>>");
+  fail([
+    "Usage: pnpm deploy:live -- <gate-off [facilities|notices|ordinances]",
+    "|configure|gate-on <facilities|notices|ordinances>|publish-on|publish-off>",
+  ].join(" "));
 }
 
 assertIgnoredAndUntracked(configRelativePath);
 
 const parameters = [];
-if (mode === "configure" || (mode === "gate-off" && source === undefined)) {
+if (mode === "publish-on") {
   for (const parameter of Object.values(scheduleParameters)) {
     parameters.push(`HonorBenefitsPilotStack:${parameter}=false`);
   }
+  parameters.push("HonorBenefitsPilotStack:PublishEnabled=true");
+} else if (mode === "publish-off") {
+  parameters.push("HonorBenefitsPilotStack:PublishEnabled=false");
+} else if (mode === "configure" || (mode === "gate-off" && source === undefined)) {
+  for (const parameter of Object.values(scheduleParameters)) {
+    parameters.push(`HonorBenefitsPilotStack:${parameter}=false`);
+  }
+  parameters.push("HonorBenefitsPilotStack:PublishEnabled=false");
 } else {
   const parameter = scheduleParameters[source];
   parameters.push(`HonorBenefitsPilotStack:${parameter}=${mode === "gate-on" ? "true" : "false"}`);
