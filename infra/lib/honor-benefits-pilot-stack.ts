@@ -658,6 +658,11 @@ export class HonorBenefitsPilotStack extends Stack {
     ]) {
       table.grantReadWriteData(apiFunction);
     }
+    // grantReadWriteData does not include DynamoDB transaction APIs. Bulk review
+    // uses TransactWriteItems so each approval chunk and its progress marker are
+    // committed atomically; keep the extra permission scoped to this table and
+    // the owner-review Lambda only.
+    table.grant(adminReviewsFunction, "dynamodb:TransactWriteItems");
     dataBucket.grantReadWrite(publishFunction);
     userPool.grant(pushSubscriptionsFunction, "cognito-idp:AdminDeleteUser");
     userPool.grant(authOtpFunction, "cognito-idp:AdminCreateUser");
