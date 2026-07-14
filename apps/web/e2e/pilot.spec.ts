@@ -30,6 +30,8 @@ test("mock email OTP creates a follow subscription", async ({ page }) => {
   await page.getByRole("button", { name: "알림 설정" }).click();
   await page.getByLabel("알림 받을 이메일").fill("pilot@example.com");
   await page.getByRole("button", { name: "인증번호 받기" }).click();
+  await page.getByLabel("이메일 인증번호").fill("12345678");
+  await expect(page.getByLabel("이메일 인증번호")).toHaveValue("12345678");
   await page.getByLabel("이메일 인증번호").fill("123456");
   await page.getByRole("button", { name: "확인", exact: true }).click();
   await page.getByRole("button", { name: "이메일 알림 추가" }).click();
