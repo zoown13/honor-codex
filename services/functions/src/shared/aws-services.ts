@@ -9,6 +9,7 @@ import webPush from "web-push";
 import type {
   DatasetPublication,
   DatasetStorage,
+  DeploymentOutcomeUnknownError,
   DeploymentTrigger,
   EmailMessage,
   Mailer,
@@ -132,6 +133,7 @@ interface AmplifyDeploymentOptions {
   client?: AmplifyClient;
   pollIntervalMs?: number;
   maxWaitMs?: number;
+  cancellationWaitMs?: number;
   now?: () => number;
   sleep?: (milliseconds: number) => Promise<void>;
 }
@@ -144,6 +146,7 @@ export class AmplifyDeploymentTrigger implements DeploymentTrigger {
   readonly #client: AmplifyClient;
   readonly #pollIntervalMs: number;
   readonly #maxWaitMs: number;
+  readonly #cancellationWaitMs: number;
   readonly #now: () => number;
   readonly #sleep: (milliseconds: number) => Promise<void>;
 
@@ -153,10 +156,11 @@ export class AmplifyDeploymentTrigger implements DeploymentTrigger {
     this.#client = options.client ?? new AmplifyClient({});
     this.#pollIntervalMs = options.pollIntervalMs ?? 10_000;
     this.#maxWaitMs = options.maxWaitMs ?? 10 * 60_000;
+    this.#cancellationWaitMs = options.cancellationWaitMs ?? 2 * 60_000;
     this.#now = options.now ?? Date.now;
     this.#sleep = options.sleep ?? ((milliseconds) =>
       new Promise((resolve) => setTimeout(resolve, milliseconds)));
-    if (this.#pollIntervalMs < 0 || this.#maxWaitMs <= 0) {
+    if (this.#pollIntervalMs < 0 || this.#maxWaitMs <= 0 || this.#cancellationWaitMs <= 0) {
       throw new Error("Amplify deployment polling configuration is invalid");
     }
   }
@@ -171,29 +175,73 @@ export class AmplifyDeploymentTrigger implements DeploymentTrigger {
     }));
     const jobId = result.jobSummary?.jobId;
     if (!jobId) throw new Error("Amplify did not return a deployment job ID");
+    return jobId;
+  }
 
+  async wait(jobId: string): Promise<void> {
+    if (!this.#appId) throw new Error("Amplify deployment is not configured");
     const deadline = this.#now() + this.#maxWaitMs;
     for (;;) {
-      const current = await this.#client.send(new GetJobCommand({
+      try {
+        const status = await this.#status(jobId);
+        if (status === "SUCCEED") return;
+        if (status && FAILED_AMPLIFY_STATUSES.has(status)) {
+          throw new Error(`Amplify deployment ${jobId} finished with ${status}`);
+        }
+      } catch (error) {
+        if (isTerminalAmplifyError(error)) throw error;
+      }
+      if (this.#now() >= deadline) break;
+      await this.#sleep(this.#pollIntervalMs);
+    }
+
+    let stopStatus: string | undefined;
+    try {
+      const stopped = await this.#client.send(new StopJobCommand({
         appId: this.#appId,
         branchName: this.#branch,
         jobId,
       }));
-      const status = current.job?.summary?.status;
-      if (status === "SUCCEED") return jobId;
-      if (status && FAILED_AMPLIFY_STATUSES.has(status)) {
-        throw new Error(`Amplify deployment ${jobId} finished with ${status}`);
+      stopStatus = stopped.jobSummary?.status;
+    } catch {
+      throw new DeploymentOutcomeUnknownError(
+        jobId,
+        `Amplify deployment ${jobId} timed out and StopJob failed; outcome requires recheck`,
+      );
+    }
+    if (stopStatus === "SUCCEED") return;
+    if (stopStatus && FAILED_AMPLIFY_STATUSES.has(stopStatus)) {
+      throw new Error(`Amplify deployment ${jobId} finished with ${stopStatus}`);
+    }
+
+    const cancellationDeadline = this.#now() + this.#cancellationWaitMs;
+    for (;;) {
+      try {
+        const status = await this.#status(jobId);
+        if (status === "SUCCEED") return;
+        if (status && FAILED_AMPLIFY_STATUSES.has(status)) {
+          throw new Error(`Amplify deployment ${jobId} finished with ${status}`);
+        }
+      } catch (error) {
+        if (isTerminalAmplifyError(error)) throw error;
       }
-      if (this.#now() >= deadline) {
-        await this.#client.send(new StopJobCommand({
-          appId: this.#appId,
-          branchName: this.#branch,
+      if (this.#now() >= cancellationDeadline) {
+        throw new DeploymentOutcomeUnknownError(
           jobId,
-        }));
-        throw new Error(`Amplify deployment ${jobId} timed out and was stopped`);
+          `Amplify deployment ${jobId} did not reach a terminal state after StopJob`,
+        );
       }
       await this.#sleep(this.#pollIntervalMs);
     }
+  }
+
+  async #status(jobId: string): Promise<string | undefined> {
+    const current = await this.#client.send(new GetJobCommand({
+      appId: this.#appId,
+      branchName: this.#branch,
+      jobId,
+    }));
+    return current.job?.summary?.status;
   }
 }
 
@@ -273,6 +321,10 @@ function safeSegment(value: string): string {
 
 function fileTimestamp(value: string): string {
   return value.replace(/[^0-9]/g, "").slice(0, 17) || String(Date.now());
+}
+
+function isTerminalAmplifyError(error: unknown): boolean {
+  return error instanceof Error && /^Amplify deployment .* finished with (FAILED|CANCELLED)$/.test(error.message);
 }
 
 function isMissingObject(error: unknown): boolean {
