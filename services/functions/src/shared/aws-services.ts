@@ -1,11 +1,13 @@
-import { AmplifyClient, StartJobCommand } from "@aws-sdk/client-amplify";
+import { AmplifyClient, GetJobCommand, StartJobCommand, StopJobCommand } from "@aws-sdk/client-amplify";
 import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
-import { GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { DeleteObjectCommand, GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import type { PutObjectCommandOutput } from "@aws-sdk/client-s3";
 import { SendEmailCommand, SESv2Client } from "@aws-sdk/client-sesv2";
 import { generateDataset } from "@honor/core";
 import type { Benefit, DatasetManifest } from "@honor/core";
 import webPush from "web-push";
 import type {
+  DatasetPublication,
   DatasetStorage,
   DeploymentTrigger,
   EmailMessage,
@@ -64,7 +66,7 @@ export class S3DatasetStorage implements DatasetStorage {
     return key;
   }
 
-  async publish(benefits: readonly Benefit[], generatedAt: string): Promise<DatasetManifest> {
+  async publish(benefits: readonly Benefit[], generatedAt: string): Promise<DatasetPublication> {
     const generated = generateDataset(benefits, generatedAt, "/data");
     const fileName = generated.manifest.indexUrl.split("/").at(-1);
     if (!fileName) throw new Error("Generated dataset path is invalid");
@@ -74,13 +76,31 @@ export class S3DatasetStorage implements DatasetStorage {
       "application/json; charset=utf-8",
       "public, max-age=31536000, immutable",
     );
-    await this.#put(
-      `${this.#prefix}/manifest.json`,
+    const manifestKey = `${this.#prefix}/manifest.json`;
+    const manifestResult = await this.#put(
+      manifestKey,
       JSON.stringify(generated.manifest),
       "application/json; charset=utf-8",
       "no-cache, max-age=60",
     );
-    return generated.manifest;
+    const manifestVersionId = manifestResult.VersionId;
+    if (!manifestVersionId) {
+      throw new Error("Versioned dataset bucket did not return a manifest VersionId");
+    }
+
+    let rolledBack = false;
+    return {
+      manifest: generated.manifest,
+      rollback: async () => {
+        if (rolledBack) return;
+        await this.#client.send(new DeleteObjectCommand({
+          Bucket: this.#bucket,
+          Key: manifestKey,
+          VersionId: manifestVersionId,
+        }));
+        rolledBack = true;
+      },
+    };
   }
 
   async #get(key: string): Promise<string> {
@@ -89,8 +109,13 @@ export class S3DatasetStorage implements DatasetStorage {
     return result.Body.transformToString("utf-8");
   }
 
-  async #put(key: string, body: string, contentType: string, cacheControl?: string): Promise<void> {
-    await this.#client.send(new PutObjectCommand({
+  async #put(
+    key: string,
+    body: string,
+    contentType: string,
+    cacheControl?: string,
+  ): Promise<PutObjectCommandOutput> {
+    return this.#client.send(new PutObjectCommand({
       Bucket: this.#bucket,
       Key: key,
       Body: body,
@@ -105,17 +130,35 @@ interface AmplifyDeploymentOptions {
   appId?: string;
   branch?: string;
   client?: AmplifyClient;
+  pollIntervalMs?: number;
+  maxWaitMs?: number;
+  now?: () => number;
+  sleep?: (milliseconds: number) => Promise<void>;
 }
+
+const FAILED_AMPLIFY_STATUSES = new Set(["FAILED", "CANCELLED"]);
 
 export class AmplifyDeploymentTrigger implements DeploymentTrigger {
   readonly #appId: string | undefined;
   readonly #branch: string;
   readonly #client: AmplifyClient;
+  readonly #pollIntervalMs: number;
+  readonly #maxWaitMs: number;
+  readonly #now: () => number;
+  readonly #sleep: (milliseconds: number) => Promise<void>;
 
   constructor(options: AmplifyDeploymentOptions) {
     this.#appId = options.appId?.trim() || undefined;
     this.#branch = options.branch?.trim() || "main";
     this.#client = options.client ?? new AmplifyClient({});
+    this.#pollIntervalMs = options.pollIntervalMs ?? 10_000;
+    this.#maxWaitMs = options.maxWaitMs ?? 10 * 60_000;
+    this.#now = options.now ?? Date.now;
+    this.#sleep = options.sleep ?? ((milliseconds) =>
+      new Promise((resolve) => setTimeout(resolve, milliseconds)));
+    if (this.#pollIntervalMs < 0 || this.#maxWaitMs <= 0) {
+      throw new Error("Amplify deployment polling configuration is invalid");
+    }
   }
 
   async start(): Promise<string | undefined> {
@@ -126,7 +169,31 @@ export class AmplifyDeploymentTrigger implements DeploymentTrigger {
       jobType: "RELEASE",
       jobReason: "Publish approved benefit dataset",
     }));
-    return result.jobSummary?.jobId;
+    const jobId = result.jobSummary?.jobId;
+    if (!jobId) throw new Error("Amplify did not return a deployment job ID");
+
+    const deadline = this.#now() + this.#maxWaitMs;
+    for (;;) {
+      const current = await this.#client.send(new GetJobCommand({
+        appId: this.#appId,
+        branchName: this.#branch,
+        jobId,
+      }));
+      const status = current.job?.summary?.status;
+      if (status === "SUCCEED") return jobId;
+      if (status && FAILED_AMPLIFY_STATUSES.has(status)) {
+        throw new Error(`Amplify deployment ${jobId} finished with ${status}`);
+      }
+      if (this.#now() >= deadline) {
+        await this.#client.send(new StopJobCommand({
+          appId: this.#appId,
+          branchName: this.#branch,
+          jobId,
+        }));
+        throw new Error(`Amplify deployment ${jobId} timed out and was stopped`);
+      }
+      await this.#sleep(this.#pollIntervalMs);
+    }
   }
 }
 
