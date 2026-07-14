@@ -298,6 +298,17 @@ describe("HonorBenefitsPilotStack", () => {
     expect(transactionStatement?.Resource).not.toBe("*");
     expect(JSON.stringify(transactionStatement?.Resource)).toContain("PilotTable");
 
+    const adminGetUserPolicy = iamPolicies.find((policy) =>
+      JSON.stringify(policy).includes("cognito-idp:AdminGetUser")
+    );
+    expect(adminGetUserPolicy).toBeDefined();
+    expect(JSON.stringify(adminGetUserPolicy)).toContain("AuthOtpServiceRole");
+    const adminGetUserStatement = adminGetUserPolicy?.Properties.PolicyDocument.Statement
+      .find(({ Action }) => Action === "cognito-idp:AdminGetUser"
+        || (Array.isArray(Action) && Action.includes("cognito-idp:AdminGetUser")));
+    expect(adminGetUserStatement?.Resource).not.toBe("*");
+    expect(JSON.stringify(adminGetUserStatement?.Resource)).toContain("UserPool");
+
     template.resourceCountIs("AWS::Events::Rule", 5);
     template.resourceCountIs("AWS::CloudWatch::Alarm", 10);
     template.resourceCountIs("AWS::Logs::LogGroup", 10);
