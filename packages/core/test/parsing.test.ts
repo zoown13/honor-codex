@@ -39,9 +39,12 @@ describe("safe source parsing", () => {
   });
 
   it("parses law.go.kr records and retains only matching article evidence", () => {
-    expect(parseOrdinanceSearch(ordinanceJsonFixture)).toEqual([expect.objectContaining({
-      id: "1234567", localGovernment: "서울특별시", effectiveAt: "2025-01-01",
-    })]);
+    expect(parseOrdinanceSearch(ordinanceJsonFixture)).toEqual(expect.objectContaining({
+      records: [expect.objectContaining({
+        id: "1234567", localGovernment: "서울특별시", effectiveAt: "2025-01-01",
+      })],
+      totalCount: 1, page: 1, rowCount: 1, section: "ordinNm", target: "ordin",
+    }));
     const detail = JSON.stringify({ 조문: [
       { 조문내용: "제1조 목적" },
       { 조문내용: "제5조 시장은 병역명문가에게 이용료를 감면할 수 있다." },
@@ -60,6 +63,73 @@ describe("safe source parsing", () => {
     ]);
   });
 
+  it("accepts numeric metadata and a single law record", () => {
+    const fixture = JSON.parse(ordinanceJsonFixture) as { OrdinSearch: Record<string, unknown> };
+    fixture.OrdinSearch.page = 1;
+    fixture.OrdinSearch.totalCnt = 1;
+    fixture.OrdinSearch.numOfRows = 1;
+    const [record] = fixture.OrdinSearch.law as Record<string, unknown>[];
+    fixture.OrdinSearch.law = record;
+
+    expect(parseOrdinanceSearch(JSON.stringify(fixture))).toEqual(expect.objectContaining({
+      records: [expect.objectContaining({ id: "1234567" })],
+      totalCount: 1,
+      page: 1,
+      rowCount: 1,
+    }));
+  });
+
+  it("accepts an absent law key only for an empty page", () => {
+    const fixture = JSON.parse(ordinanceJsonFixture) as { OrdinSearch: Record<string, unknown> };
+    fixture.OrdinSearch.totalCnt = "0";
+    fixture.OrdinSearch.numOfRows = "0";
+    delete fixture.OrdinSearch.law;
+
+    expect(parseOrdinanceSearch(JSON.stringify(fixture))).toEqual({
+      records: [], totalCount: 0, page: 1, rowCount: 0, section: "ordinNm", target: "ordin",
+    });
+  });
+
+  it("rejects malformed ordinance search metadata", () => {
+    const invalidMetadata: [string, unknown][] = [
+      ["page", "0"],
+      ["totalCnt", -1],
+      ["numOfRows", "1.5"],
+      ["section", ""],
+      ["target", "law"],
+      ["resultCode", "01"],
+    ];
+    for (const [field, value] of invalidMetadata) {
+      const fixture = JSON.parse(ordinanceJsonFixture) as { OrdinSearch: Record<string, unknown> };
+      fixture.OrdinSearch[field] = value;
+      expect(() => parseOrdinanceSearch(JSON.stringify(fixture))).toThrow();
+    }
+    expect(() => parseOrdinanceSearch(JSON.stringify({ resultCode: "00" }))).toThrow("OrdinSearch");
+  });
+
+  it("rejects malformed containers, records, and row count mismatches", () => {
+    const malformedContainer = JSON.parse(ordinanceJsonFixture) as { OrdinSearch: Record<string, unknown> };
+    malformedContainer.OrdinSearch.law = "not-a-record";
+    expect(() => parseOrdinanceSearch(JSON.stringify(malformedContainer))).toThrow("container");
+
+    const missingContainer = JSON.parse(ordinanceJsonFixture) as { OrdinSearch: Record<string, unknown> };
+    delete missingContainer.OrdinSearch.law;
+    expect(() => parseOrdinanceSearch(JSON.stringify(missingContainer))).toThrow("missing law");
+
+    const mismatch = JSON.parse(ordinanceJsonFixture) as { OrdinSearch: Record<string, unknown> };
+    mismatch.OrdinSearch.numOfRows = "2";
+    expect(() => parseOrdinanceSearch(JSON.stringify(mismatch))).toThrow("row count mismatch");
+
+    const malformedRecord = JSON.parse(ordinanceJsonFixture) as { OrdinSearch: Record<string, unknown> };
+    malformedRecord.OrdinSearch.law = [{ "자치법규ID": "1234567" }];
+    expect(() => parseOrdinanceSearch(JSON.stringify(malformedRecord))).toThrow("record at index 0");
+  });
+
+  it("rejects XML and invalid JSON ordinance search responses", () => {
+    expect(() => parseOrdinanceSearch("<OrdinSearch />")).toThrow("must be JSON");
+    expect(() => parseOrdinanceSearch("not-json")).toThrow("not valid JSON");
+  });
+
   it("injects fetch into the ordinance client", async () => {
     const fetchMock = vi.fn(async (_input: string | URL, _init?: RequestInit) => ({
       ok: true,
@@ -71,7 +141,9 @@ describe("safe source parsing", () => {
     const requested = new URL(String(fetchMock.mock.calls[0]?.[0]));
     expect(requested.searchParams.get("target")).toBe("ordin");
     expect(requested.searchParams.get("query")).toBe("병역명문가");
+    expect(requested.searchParams.get("sort")).toBe("lasc");
     expect(fetchMock.mock.calls[0]?.[1]?.signal).toBeInstanceOf(AbortSignal);
-    expect(result).toHaveLength(1);
+    expect(result.records).toHaveLength(1);
+    expect(result).toMatchObject({ totalCount: 1, page: 1, rowCount: 1 });
   });
 });
