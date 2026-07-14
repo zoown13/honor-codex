@@ -1,13 +1,13 @@
 import type {
   Benefit,
   BenefitChange,
-  DatasetManifest,
   PushSubscriptionRecord,
 } from "@honor/core";
 import { BulkReviewConflictError } from "../src/shared/contracts.js";
 import type {
   AppRepository,
   BulkReviewOperation,
+  DatasetPublication,
   DatasetStorage,
   DeliveryReservation,
   StoredSubscription,
@@ -142,9 +142,26 @@ export class FakeStorage implements DatasetStorage {
   async saveCandidate(source: string, _at: string, benefits: readonly Benefit[]) {
     this.candidates.push([...benefits]); return `candidate/${source}`;
   }
-  async publish(benefits: readonly Benefit[], generatedAt: string): Promise<DatasetManifest> {
+  async publish(benefits: readonly Benefit[], generatedAt: string): Promise<DatasetPublication> {
+    const previous = [...this.benefits];
     this.benefits = [...benefits];
-    return { schemaVersion: 1, datasetId: "test", generatedAt, indexUrl: "/data/test.json", sha256: "0".repeat(64), itemCount: benefits.length };
+    const manifest = {
+      schemaVersion: 1 as const,
+      datasetId: "test",
+      generatedAt,
+      indexUrl: "/data/test.json",
+      sha256: "0".repeat(64),
+      itemCount: benefits.length,
+    };
+    let rolledBack = false;
+    return {
+      manifest,
+      rollback: async () => {
+        if (rolledBack) return;
+        this.benefits = previous;
+        rolledBack = true;
+      },
+    };
   }
 }
 
