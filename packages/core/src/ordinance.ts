@@ -5,6 +5,8 @@ import type { Benefit, OrdinanceRecord } from "./types.ts";
 
 export type FetchLike = (input: string | URL, init?: RequestInit) => Promise<Pick<Response, "ok" | "status" | "text">>;
 
+const LAW_REQUEST_TIMEOUT_MS = 20_000;
+
 export interface LawApiClientOptions {
   oc: string;
   baseUrl?: string;
@@ -30,7 +32,7 @@ export class LawApiClient {
       page: String(page), display: String(Math.min(Math.max(display, 1), 100)),
       nw: "1", search: String(search),
     }).toString();
-    const response = await this.#fetch(url);
+    const response = await this.#fetch(url, { signal: AbortSignal.timeout(LAW_REQUEST_TIMEOUT_MS) });
     if (!response.ok) throw new Error(`law.go.kr search failed: HTTP ${response.status}`);
     return parseOrdinanceSearch(await response.text());
   }
@@ -38,7 +40,7 @@ export class LawApiClient {
   async getMatchingArticles(id: string): Promise<string[]> {
     const url = new URL(`${this.#baseUrl}/lawService.do`);
     url.search = new URLSearchParams({ OC: this.#oc, target: "ordin", type: "JSON", ID: id }).toString();
-    const response = await this.#fetch(url);
+    const response = await this.#fetch(url, { signal: AbortSignal.timeout(LAW_REQUEST_TIMEOUT_MS) });
     if (!response.ok) throw new Error(`law.go.kr detail failed: HTTP ${response.status}`);
     return parseMatchingArticles(await response.text());
   }
@@ -54,7 +56,7 @@ export function parseMatchingArticles(input: string): string[] {
   const text = input.replace(/^\uFEFF/, "").trim();
   const values: string[] = [];
   if (text.startsWith("<")) {
-    for (const match of text.matchAll(/<(?:조문내용|항내용|호내용|articleContent)\b[^>]*>([\s\S]*?)<\/[^>]+>/gi)) {
+    for (const match of text.matchAll(/<(?:조문내용|조내용|항내용|호내용|부칙내용|제개정이유내용|articleContent)\b[^>]*>([\s\S]*?)<\/[^>]+>/gi)) {
       values.push(stripMarkup(match[1] ?? ""));
     }
   } else {
@@ -149,7 +151,7 @@ function collectArticleValues(value: unknown, output: string[]): void {
   if (Array.isArray(value)) { value.forEach((item) => collectArticleValues(item, output)); return; }
   if (!isRecord(value)) return;
   for (const [key, child] of Object.entries(value)) {
-    if (typeof child === "string" && /조문내용|항내용|호내용|articleContent/i.test(key)) output.push(stripMarkup(child));
+    if (typeof child === "string" && /조문내용|조내용|항내용|호내용|부칙내용|제개정이유내용|articleContent/i.test(key)) output.push(stripMarkup(child));
     else collectArticleValues(child, output);
   }
 }

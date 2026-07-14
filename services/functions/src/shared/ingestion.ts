@@ -5,6 +5,8 @@ import type { AppRepository, DatasetStorage } from "./contracts.js";
 export interface IngestionInput {
   sourceName: string;
   benefitType: BenefitType;
+  benefitIdPrefix: string;
+  allowDeletes?: boolean;
   rawBody: string;
   benefits: readonly Benefit[];
   retrievedAt: string;
@@ -28,12 +30,20 @@ export async function persistIngestion(
   input: IngestionInput,
 ): Promise<IngestionResult> {
   const snapshotKey = await storage.saveSnapshot(input.sourceName, input.retrievedAt, input.rawBody);
-  const current = (await storage.loadBenefits()).filter((item) => item.type === input.benefitType);
-  const detected = diffBenefitSets(current, input.benefits, input.retrievedAt);
+  const current = (await storage.loadBenefits()).filter(
+    (item) => item.type === input.benefitType && item.id.startsWith(input.benefitIdPrefix)
+  );
+  const allDetected = diffBenefitSets(current, input.benefits, input.retrievedAt);
+  const detected = input.allowDeletes === false
+    ? allDetected.filter((change) => change.action !== "DELETE")
+    : allDetected;
   const deletionCount = detected.filter((change) => change.action === "DELETE").length;
-  const batchGuardTriggered = current.length >= 20 && (
-    Math.abs(input.benefits.length - current.length) / current.length > 0.05
-    || deletionCount / current.length > 0.01
+  const firstBaselineGuardTriggered = current.length < 20 && detected.length > 0;
+  const batchGuardTriggered = firstBaselineGuardTriggered || (
+    current.length >= 20 && (
+      Math.abs(input.benefits.length - current.length) / current.length > 0.05
+      || deletionCount / current.length > 0.01
+    )
   );
   const changes = batchGuardTriggered
     ? detected.map((change) => ({ ...change, risk: "HIGH" as const, status: "PENDING" as const })) : detected;

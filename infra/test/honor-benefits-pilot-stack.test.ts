@@ -283,6 +283,64 @@ describe("HonorBenefitsPilotStack", () => {
     });
   });
 
+  it("keeps only the three ingestion schedules disabled until live preflight succeeds", () => {
+    const synthesized = template.toJSON() as {
+      Parameters: Record<string, unknown>;
+      Conditions: Record<string, unknown>;
+      Resources: Record<string, {
+        Type: string;
+        Properties: { Description?: string; State?: unknown };
+      }>;
+    };
+    const scheduleGates = [
+      {
+        parameter: "FacilitiesIngestionScheduleEnabled",
+        condition: "FacilitiesIngestionScheduleEnabledCondition",
+        description: "Daily MMA facilities ingest at 03:00 KST (18:00 UTC)."
+      },
+      {
+        parameter: "NoticesIngestionScheduleEnabled",
+        condition: "NoticesIngestionScheduleEnabledCondition",
+        description: "Daily MMA notices ingest at 03:15 KST (18:15 UTC)."
+      },
+      {
+        parameter: "OrdinancesIngestionScheduleEnabled",
+        condition: "OrdinancesIngestionScheduleEnabledCondition",
+        description: "Weekly ordinance ingest on Monday at 03:30 KST (Sunday 18:30 UTC)."
+      }
+    ];
+    expect(synthesized.Parameters.MmaNoticesUrl).toEqual(expect.objectContaining({
+      Default: "https://www.mma.go.kr/hall/board/boardList.do?mc=mma0003395&gesipan_id=217"
+    }));
+    const rules = Object.values(synthesized.Resources)
+      .filter((resource) => resource.Type === "AWS::Events::Rule");
+    for (const gate of scheduleGates) {
+      expect(synthesized.Parameters[gate.parameter]).toEqual({
+        Type: "String",
+        Default: "false",
+        AllowedValues: ["true", "false"],
+        Description: expect.stringContaining("live source preflight")
+      });
+      expect(synthesized.Conditions[gate.condition]).toEqual({
+        "Fn::Equals": [{ Ref: gate.parameter }, "true"]
+      });
+      const rule = rules.find((resource) => resource.Properties.Description === gate.description);
+      expect(rule?.Properties.State).toEqual({
+        "Fn::If": [gate.condition, "ENABLED", "DISABLED"]
+      });
+    }
+    const weeklyNotification = rules.find(
+      (resource) => resource.Properties.Description ===
+        "Weekly follower digest on Monday at 09:00 KST (00:00 UTC)."
+    );
+    expect(weeklyNotification?.Properties.State).toBe("ENABLED");
+    expect(rules.filter((resource) =>
+      typeof resource.Properties.State === "object" &&
+      resource.Properties.State !== null &&
+      "Fn::If" in resource.Properties.State
+    )).toHaveLength(3);
+  });
+
   it("supports a two-step Amplify branch migration without losing the app", () => {
     const synthesized = template.toJSON() as {
       Parameters: Record<string, unknown>;
@@ -295,7 +353,7 @@ describe("HonorBenefitsPilotStack", () => {
         Condition?: string;
         Properties: Record<string, unknown>;
       }>;
-      Outputs: Record<string, { Condition?: string }>;
+      Outputs: Record<string, { Condition?: string; Value?: unknown }>;
     };
 
     expect(synthesized.Parameters.AmplifyBranchEnabled).toEqual({
@@ -342,6 +400,17 @@ describe("HonorBenefitsPilotStack", () => {
     }
     expect(branchUrlOutput.Condition).toBe("AmplifyBranchEnabledCondition");
     expect(pilotUrlOutput.Condition).toBe("AmplifyBranchEnabledCondition");
+    expect(pilotUrlOutput.Value).toEqual({
+      "Fn::Join": ["", [
+        "https://",
+        { Ref: "AmplifyBranchName" },
+        ".",
+        { "Fn::GetAtt": [appLogicalId, "DefaultDomain"] },
+        "/pilot/",
+        { Ref: "PilotSlug" },
+        "/"
+      ]]
+    });
     expect(githubRule.Assertions).toHaveLength(1);
     expect(githubRule.Assertions[0]?.AssertDescription).toContain("must either both be blank");
     expect(githubRule.Assertions[0]?.Assert).toEqual({
