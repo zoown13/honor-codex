@@ -9,8 +9,9 @@ import { fileURLToPath } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const configPath = path.join(root, ".env.deploy.local");
 const configRelativePath = ".env.deploy.local";
-const mode = process.argv[2];
-const source = process.argv[3];
+const cliArgs = process.argv.slice(2);
+if (cliArgs[0] === "--") cliArgs.shift();
+const [mode, source, extraArgument] = cliArgs;
 const supportedModes = new Set(["gate-off", "configure", "gate-on"]);
 const scheduleParameters = {
   facilities: "FacilitiesIngestionScheduleEnabled",
@@ -18,7 +19,8 @@ const scheduleParameters = {
   ordinances: "OrdinancesIngestionScheduleEnabled"
 };
 
-if (!supportedModes.has(mode) ||
+if (extraArgument !== undefined ||
+    !supportedModes.has(mode) ||
     (mode === "gate-on" && !(source in scheduleParameters)) ||
     (mode === "configure" && source !== undefined) ||
     (mode === "gate-off" && source !== undefined && !(source in scheduleParameters))) {
