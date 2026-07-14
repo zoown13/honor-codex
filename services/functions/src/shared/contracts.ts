@@ -70,11 +70,16 @@ export interface AppRepository {
   finishDelivery(userId: string, key: string, status: "SENT" | "FAILED", at: string, error?: string): Promise<void>;
 }
 
+export interface DatasetPublication {
+  manifest: DatasetManifest;
+  rollback(): Promise<void>;
+}
+
 export interface DatasetStorage {
   loadBenefits(): Promise<Benefit[]>;
   saveSnapshot(source: string, retrievedAt: string, body: string): Promise<string>;
   saveCandidate(source: string, retrievedAt: string, benefits: readonly Benefit[]): Promise<string>;
-  publish(benefits: readonly Benefit[], generatedAt: string): Promise<DatasetManifest>;
+  publish(benefits: readonly Benefit[], generatedAt: string): Promise<DatasetPublication>;
 }
 
 export interface DeploymentTrigger {
