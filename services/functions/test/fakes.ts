@@ -3,13 +3,17 @@ import type {
   BenefitChange,
   PushSubscriptionRecord,
 } from "@honor/core";
-import { BulkReviewConflictError } from "../src/shared/contracts.js";
+import {
+  BulkReviewConflictError,
+  PublicationConflictError,
+} from "../src/shared/contracts.js";
 import type {
   AppRepository,
   BulkReviewOperation,
   DatasetPublication,
   DatasetStorage,
   DeliveryReservation,
+  PublicationOperation,
   StoredSubscription,
 } from "../src/shared/contracts.js";
 import type { HttpEvent } from "../src/shared/http.js";
@@ -21,6 +25,7 @@ export class FakeRepository implements AppRepository {
   changes: BenefitChange[] = [];
   deliveries = new Map<string, DeliveryReservation>();
   bulkReviewOperations = new Map<string, BulkReviewOperation>();
+  publicationOperation: PublicationOperation | undefined;
 
   async listSubscriptions(userId: string) { return this.subscriptions.filter((item) => item.userId === userId); }
   async putSubscription(value: StoredSubscription) {
@@ -115,8 +120,97 @@ export class FakeRepository implements AppRepository {
     this.bulkReviewOperations.set(operationId, updated);
     return { operation: updated, processedCount: ids.length };
   }
-  async markChangesPublished(ids: readonly string[], at: string) {
-    for (const change of this.changes) if (ids.includes(change.id)) Object.assign(change, { status: "PUBLISHED", publishedAt: at });
+  async getPublicationOperation() {
+    return this.publicationOperation;
+  }
+  async beginPublication(value: PublicationOperation) {
+    const existing = this.publicationOperation;
+    if (existing && !["COMPLETED", "FAILED"].includes(existing.status)) {
+      if (existing.id === value.id && existing.fingerprint === value.fingerprint) {
+        return { operation: existing, created: false };
+      }
+      throw new PublicationConflictError();
+    }
+    this.publicationOperation = { ...value, changeIds: [...value.changeIds] };
+    return { operation: this.publicationOperation, created: true };
+  }
+  async stagePublication(id: string, manifest: PublicationOperation["manifest"], token: string, at: string) {
+    const operation = this.requirePublication(id, "PREPARING");
+    if (!manifest) throw new Error("manifest is required");
+    this.publicationOperation = {
+      ...operation,
+      status: "STAGED",
+      manifest,
+      manifestRollbackToken: token,
+      updatedAt: at,
+    };
+    return this.publicationOperation;
+  }
+  async recordPublicationJob(id: string, jobId: string, at: string) {
+    const operation = this.requirePublication(id, ["STAGED", "DEPLOYING"]);
+    this.publicationOperation = {
+      ...operation,
+      status: "DEPLOYING",
+      deploymentJobId: jobId,
+      updatedAt: at,
+    };
+    return this.publicationOperation;
+  }
+  async markPublicationDeployed(id: string, jobId: string, at: string) {
+    const operation = this.requirePublication(id, ["DEPLOYING", "DEPLOYED"]);
+    if (operation.deploymentJobId !== jobId) throw new Error("deployment job mismatch");
+    this.publicationOperation = {
+      ...operation,
+      status: "DEPLOYED",
+      deployedAt: operation.deployedAt ?? at,
+      updatedAt: at,
+    };
+    return this.publicationOperation;
+  }
+  async completePublication(id: string, at: string) {
+    const operation = this.requirePublication(id, ["DEPLOYED", "COMPLETED"]);
+    this.publicationOperation = {
+      ...operation,
+      status: "COMPLETED",
+      completedAt: operation.completedAt ?? at,
+      updatedAt: at,
+    };
+    return this.publicationOperation;
+  }
+  async failPublication(id: string, at: string, error: string) {
+    const operation = this.requirePublication(id, ["PREPARING", "STAGED", "DEPLOYING"]);
+    this.publicationOperation = {
+      ...operation,
+      status: "FAILED",
+      failedAt: at,
+      updatedAt: at,
+      error,
+    };
+  }
+  async markChangesPublished(ids: readonly string[], at: string, operationId: string) {
+    for (const id of [...new Set(ids)]) {
+      const change = this.changes.find((item) => item.id === id);
+      if (!change) throw new Error("change not found");
+      const publicationId = (change as typeof change & { publishOperationId?: string }).publishOperationId;
+      if (change.status === "PUBLISHED" && publicationId === operationId) continue;
+      if (!["APPROVED", "AUTO_APPROVED"].includes(change.status)) throw new Error("change is not publishable");
+      Object.assign(change, {
+        status: "PUBLISHED",
+        publishedAt: at,
+        publishOperationId: operationId,
+      });
+    }
+  }
+  private requirePublication(
+    id: string,
+    statuses: PublicationOperation["status"] | PublicationOperation["status"][],
+  ) {
+    const operation = this.publicationOperation;
+    const allowed = Array.isArray(statuses) ? statuses : [statuses];
+    if (!operation || operation.id !== id || !allowed.includes(operation.status)) {
+      throw new Error("publication state conflict");
+    }
+    return operation;
   }
   async reserveDelivery(value: DeliveryReservation) {
     const key = `${value.userId}:${value.idempotencyKey}`;
@@ -137,31 +231,36 @@ export class FakeStorage implements DatasetStorage {
   benefits: Benefit[] = [];
   snapshots: string[] = [];
   candidates: Benefit[][] = [];
+  rollbacks: string[] = [];
+  readonly #previousByToken = new Map<string, Benefit[]>();
   async loadBenefits() { return this.benefits; }
   async saveSnapshot(source: string, _at: string, body: string) { this.snapshots.push(body); return `raw/${source}`; }
   async saveCandidate(source: string, _at: string, benefits: readonly Benefit[]) {
     this.candidates.push([...benefits]); return `candidate/${source}`;
   }
   async publish(benefits: readonly Benefit[], generatedAt: string): Promise<DatasetPublication> {
-    const previous = [...this.benefits];
+    const rollbackToken = `manifest-version-${this.#previousByToken.size + 1}`;
+    this.#previousByToken.set(rollbackToken, [...this.benefits]);
     this.benefits = [...benefits];
-    const manifest = {
-      schemaVersion: 1 as const,
-      datasetId: "test",
-      generatedAt,
-      indexUrl: "/data/test.json",
-      sha256: "0".repeat(64),
-      itemCount: benefits.length,
-    };
-    let rolledBack = false;
     return {
-      manifest,
-      rollback: async () => {
-        if (rolledBack) return;
-        this.benefits = previous;
-        rolledBack = true;
+      manifest: {
+        schemaVersion: 1 as const,
+        datasetId: "test",
+        generatedAt,
+        indexUrl: "/data/test.json",
+        sha256: "0".repeat(64),
+        itemCount: benefits.length,
       },
+      rollbackToken,
     };
+  }
+  async rollback(rollbackToken: string) {
+    const previous = this.#previousByToken.get(rollbackToken);
+    if (!previous) throw new Error("unknown rollback token");
+    if (!this.rollbacks.includes(rollbackToken)) {
+      this.benefits = [...previous];
+      this.rollbacks.push(rollbackToken);
+    }
   }
 }
 
