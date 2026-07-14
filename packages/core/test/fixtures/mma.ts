@@ -22,7 +22,13 @@ export const mmaJsonpFixture = `honorPilot(${JSON.stringify({ success: true, lis
 
 export const ordinanceJsonFixture = JSON.stringify({
   OrdinSearch: {
-    ordin: [{
+    target: "ordin",
+    section: "ordinNm",
+    totalCnt: "1",
+    page: "1",
+    numOfRows: "1",
+    resultCode: "00",
+    law: [{
       "자치법규ID": "1234567",
       "자치법규명": "서울특별시 병역명문가 예우에 관한 조례",
       "지자체기관명": "서울특별시",

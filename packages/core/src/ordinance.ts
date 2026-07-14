@@ -13,6 +13,15 @@ export interface LawApiClientOptions {
   fetch?: FetchLike;
 }
 
+export interface OrdinanceSearchPage {
+  records: OrdinanceRecord[];
+  totalCount: number;
+  page: number;
+  rowCount: number;
+  section: string;
+  target: string;
+}
+
 export class LawApiClient {
   readonly #oc: string;
   readonly #baseUrl: string;
@@ -25,12 +34,12 @@ export class LawApiClient {
     this.#fetch = options.fetch ?? fetch;
   }
 
-  async searchOrdinances(query = "병역명문가", page = 1, display = 100, search: 1 | 2 = 1): Promise<OrdinanceRecord[]> {
+  async searchOrdinances(query = "병역명문가", page = 1, display = 100, search: 1 | 2 = 1): Promise<OrdinanceSearchPage> {
     const url = new URL(`${this.#baseUrl}/lawSearch.do`);
     url.search = new URLSearchParams({
       OC: this.#oc, target: "ordin", type: "JSON", query,
       page: String(page), display: String(Math.min(Math.max(display, 1), 100)),
-      nw: "1", search: String(search),
+      nw: "1", search: String(search), sort: "lasc",
     }).toString();
     const response = await this.#fetch(url, { signal: AbortSignal.timeout(LAW_REQUEST_TIMEOUT_MS) });
     if (!response.ok) throw new Error(`law.go.kr search failed: HTTP ${response.status}`);
@@ -46,10 +55,40 @@ export class LawApiClient {
   }
 }
 
-export function parseOrdinanceSearch(input: string): OrdinanceRecord[] {
+export function parseOrdinanceSearch(input: string): OrdinanceSearchPage {
   const text = input.replace(/^\uFEFF/, "").trim();
-  const rows = text.startsWith("<") ? parseXmlRows(text) : findOrdinanceRows(JSON.parse(text) as unknown);
-  return rows.map(normalizeOrdinanceRow).filter((item): item is OrdinanceRecord => item !== undefined);
+  if (!text || text.startsWith("<")) throw new Error("law.go.kr search response must be JSON");
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text) as unknown;
+  } catch {
+    throw new Error("law.go.kr search response is not valid JSON");
+  }
+  if (!isRecord(parsed) || !isRecord(parsed.OrdinSearch)) {
+    throw new Error("law.go.kr search response is missing OrdinSearch");
+  }
+
+  const envelope = parsed.OrdinSearch;
+  const page = parseSearchInteger(envelope.page, "page", 1);
+  const totalCount = parseSearchInteger(envelope.totalCnt, "totalCnt", 0);
+  const rowCount = parseSearchInteger(envelope.numOfRows, "numOfRows", 0);
+  const section = parseRequiredSearchString(envelope.section, "section");
+  const target = parseRequiredSearchString(envelope.target, "target", false);
+  const resultCode = parseRequiredSearchString(envelope.resultCode, "resultCode", false);
+  if (resultCode !== "00") throw new Error(`law.go.kr search failed: resultCode ${resultCode}`);
+  if (target !== "ordin") throw new Error(`law.go.kr search target must be ordin, received ${target}`);
+
+  const rows = parseOrdinanceRows(envelope, rowCount);
+  if (rows.length !== rowCount) {
+    throw new Error(`law.go.kr search row count mismatch: expected ${rowCount}, received ${rows.length}`);
+  }
+  const records = rows.map((row, index) => {
+    const record = normalizeOrdinanceRow(row);
+    if (!record) throw new Error(`law.go.kr search record at index ${index} is malformed`);
+    return record;
+  });
+  return { records, totalCount, page, rowCount, section, target };
 }
 
 export function parseMatchingArticles(input: string): string[] {
@@ -96,32 +135,40 @@ export function normalizeOrdinance(record: OrdinanceRecord, retrievedAt: string)
   };
 }
 
-function findOrdinanceRows(value: unknown): Record<string, unknown>[] {
-  if (Array.isArray(value)) return value.filter(isRecord);
-  if (!isRecord(value)) return [];
-  for (const key of ["ordin", "Ordin", "items", "list"]) {
-    const candidate = value[key];
-    if (Array.isArray(candidate)) return candidate.filter(isRecord);
-    if (isRecord(candidate)) return [candidate];
+function parseOrdinanceRows(envelope: Record<string, unknown>, rowCount: number): Record<string, unknown>[] {
+  if (!("law" in envelope)) {
+    if (rowCount === 0) return [];
+    throw new Error("law.go.kr search response is missing law records");
   }
-  for (const candidate of Object.values(value)) {
-    const found = findOrdinanceRows(candidate);
-    if (found.length) return found;
+  const value = envelope.law;
+  if (Array.isArray(value)) {
+    if (!value.every(isRecord)) throw new Error("law.go.kr search law records are malformed");
+    return value;
   }
-  return [];
+  if (isRecord(value)) return [value];
+  throw new Error("law.go.kr search law container is malformed");
 }
 
-function parseXmlRows(xml: string): Record<string, unknown>[] {
-  if (xml.length > 5 * 1024 * 1024) throw new Error("law.go.kr XML is too large");
-  const rows: Record<string, unknown>[] = [];
-  for (const block of xml.matchAll(/<(?:ordin|자치법규)\b[^>]*>([\s\S]*?)<\/(?:ordin|자치법규)>/gi)) {
-    const row: Record<string, unknown> = {};
-    for (const tag of (block[1] ?? "").matchAll(/<([^\s/>]+)\b[^>]*>([\s\S]*?)<\/\1>/g)) {
-      if (tag[1]) row[tag[1]] = stripMarkup(tag[2] ?? "");
-    }
-    rows.push(row);
+function parseSearchInteger(value: unknown, field: string, minimum: number): number {
+  let parsed: number;
+  if (typeof value === "number") {
+    parsed = value;
+  } else if (typeof value === "string" && /^\d+$/.test(value)) {
+    parsed = Number(value);
+  } else {
+    throw new Error(`law.go.kr search ${field} must be a decimal integer`);
   }
-  return rows;
+  if (!Number.isSafeInteger(parsed) || parsed < minimum) {
+    throw new Error(`law.go.kr search ${field} is out of range`);
+  }
+  return parsed;
+}
+
+function parseRequiredSearchString(value: unknown, field: string, trim = true): string {
+  if (typeof value !== "string") throw new Error(`law.go.kr search ${field} must be a string`);
+  const parsed = trim ? value.trim() : value;
+  if (!parsed) throw new Error(`law.go.kr search ${field} must not be empty`);
+  return parsed;
 }
 
 function normalizeOrdinanceRow(row: Record<string, unknown>): OrdinanceRecord | undefined {

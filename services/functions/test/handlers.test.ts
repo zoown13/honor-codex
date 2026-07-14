@@ -1,10 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import { normalizeMmaFacility } from "@honor/core";
+import type { OrdinanceRecord, OrdinanceSearchPage } from "@honor/core";
 import { createAdminReviewsHandler } from "../src/handlers/admin-reviews.js";
 import { createAuthOtpHandler } from "../src/handlers/auth-otp.js";
 import { createMmaFacilityIngestHandler } from "../src/handlers/ingest-mma-facilities.js";
 import { createMmaNoticeIngestHandler } from "../src/handlers/ingest-mma-notices.js";
 import { createOrdinanceIngestHandler } from "../src/handlers/ingest-ordinances.js";
+import type { OrdinanceClient } from "../src/handlers/ingest-ordinances.js";
 import { createPushSubscriptionsHandler } from "../src/handlers/push-subscriptions.js";
 import { createSubscriptionsHandler } from "../src/handlers/subscriptions.js";
 import { createWeeklyNotificationHandler } from "../src/handlers/weekly-notifications.js";
@@ -23,6 +25,59 @@ const benefit = normalizeMmaFacility({
   wido_vl: "37.818336",
   gyeongdo_vl: "127.711765",
 }, "2026-07-10T00:00:00.000Z");
+
+function ordinanceRecord(id: string, overrides: Partial<OrdinanceRecord> = {}): OrdinanceRecord {
+  return {
+    id,
+    title: `테스트 조례 ${id}`,
+    localGovernment: "테스트시",
+    url: `https://www.law.go.kr/ordinance/${id}`,
+    matchingArticles: [],
+    ...overrides,
+  };
+}
+
+function ordinancePage(
+  search: 1 | 2,
+  page: number,
+  totalCount: number,
+  records: OrdinanceRecord[],
+  overrides: Partial<Omit<OrdinanceSearchPage, "records">> = {},
+): OrdinanceSearchPage {
+  return {
+    records,
+    totalCount,
+    page,
+    rowCount: records.length,
+    section: search === 1 ? "ordinNm" : "bdyText",
+    target: "ordin",
+    ...overrides,
+  };
+}
+
+function ordinanceHarness(
+  searchOrdinances: OrdinanceClient["searchOrdinances"],
+  monotonicNow?: () => number,
+) {
+  const repository = new FakeRepository();
+  const storage = new FakeStorage();
+  const getMatchingArticles = vi.fn(async () => [] as string[]);
+  const handler = createOrdinanceIngestHandler({
+    repository,
+    storage,
+    clock: fixedClock,
+    ...(monotonicNow ? { monotonicNow } : {}),
+    client: { searchOrdinances, getMatchingArticles },
+  });
+  return { repository, storage, getMatchingArticles, handler };
+}
+
+function expectNoOrdinanceEffects(harness: ReturnType<typeof ordinanceHarness>): void {
+  expect(harness.getMatchingArticles).not.toHaveBeenCalled();
+  expect(harness.repository.changes).toHaveLength(0);
+  expect(harness.storage.snapshots).toHaveLength(0);
+  expect(harness.storage.candidates).toHaveLength(0);
+}
 
 describe("authenticated APIs", () => {
   it("creates deterministic subscriptions from JWT identity and never stores coordinates", async () => {
@@ -137,78 +192,154 @@ describe("ingestion and notification safety", () => {
     expect(storage.candidates).toHaveLength(0);
   });
 
-  it("rejects an empty ordinance search before persistence", async () => {
-    const storage = new FakeStorage();
-    const getMatchingArticles = vi.fn(async () => [] as string[]);
-    const handler = createOrdinanceIngestHandler({
-      repository: new FakeRepository(),
-      storage,
-      clock: fixedClock,
-      client: {
-        searchOrdinances: vi.fn(async () => []),
-        getMatchingArticles
-      }
+  it("ingests complete multi-page ordinance scopes and resolves overlapping IDs deterministically", async () => {
+    const scopeOneFirst = Array.from({ length: 100 }, (_, index) => ordinanceRecord(`scope-1-${index}`, {
+      updatedAt: "2026-01-01",
+    }));
+    const scopeOneTail = ordinanceRecord("scope-1-tail");
+    const overlappingNewer = ordinanceRecord("scope-1-0", {
+      title: "최신 중복 조례",
+      updatedAt: "2026-07-01",
     });
-
-    await expect(handler(scheduleEvent())).rejects.toThrow(
-      "law.go.kr search returned no ordinance records"
+    const searchOrdinances = vi.fn<OrdinanceClient["searchOrdinances"]>(
+      async (_query = "병역명문가", page = 1, _display = 100, search = 1) => {
+        if (search === 1 && page === 1) return ordinancePage(1, 1, 101, scopeOneFirst);
+        if (search === 1 && page === 2) return ordinancePage(1, 2, 101, [scopeOneTail]);
+        return ordinancePage(2, 1, 1, [overlappingNewer]);
+      },
     );
-    expect(getMatchingArticles).not.toHaveBeenCalled();
-    expect(storage.snapshots).toHaveLength(0);
-    expect(storage.candidates).toHaveLength(0);
+    const harness = ordinanceHarness(searchOrdinances);
+
+    await harness.handler(scheduleEvent());
+
+    expect(searchOrdinances).toHaveBeenCalledTimes(3);
+    expect(harness.getMatchingArticles).toHaveBeenCalledTimes(101);
+    expect(harness.repository.changes).toHaveLength(101);
+    expect(harness.storage.snapshots).toHaveLength(1);
+    expect(harness.storage.candidates).toHaveLength(1);
+    const snapshot = JSON.parse(harness.storage.snapshots[0] ?? "{}") as {
+      rawRecordsByScope: Record<string, number>;
+      records: OrdinanceRecord[];
+    };
+    expect(snapshot.rawRecordsByScope).toEqual({ 1: 101, 2: 1 });
+    expect(snapshot.records).toHaveLength(101);
+    expect(snapshot.records.find((record) => record.id === "scope-1-0")?.title).toBe("최신 중복 조례");
+  });
+
+  it("rejects an ordinance response whose page metadata does not match the request", async () => {
+    const harness = ordinanceHarness(vi.fn(async () => ordinancePage(1, 2, 1, [ordinanceRecord("one")])));
+
+    await expect(harness.handler(scheduleEvent())).rejects.toThrow(
+      "law.go.kr search scope 1 page mismatch: expected 1, received 2",
+    );
+    expectNoOrdinanceEffects(harness);
+  });
+
+  it("rejects an ordinance scope whose total changes between pages", async () => {
+    const firstPage = Array.from({ length: 100 }, (_, index) => ordinanceRecord(`total-${index}`));
+    const searchOrdinances = vi.fn<OrdinanceClient["searchOrdinances"]>(
+      async (_query = "병역명문가", page = 1) => page === 1
+        ? ordinancePage(1, 1, 101, firstPage)
+        : ordinancePage(1, 2, 102, [ordinanceRecord("tail")]),
+    );
+    const harness = ordinanceHarness(searchOrdinances);
+
+    await expect(harness.handler(scheduleEvent())).rejects.toThrow(
+      "law.go.kr search scope 1 total changed from 101 to 102",
+    );
+    expectNoOrdinanceEffects(harness);
+  });
+
+  it("rejects a short non-final ordinance page", async () => {
+    const shortPage = Array.from({ length: 99 }, (_, index) => ordinanceRecord(`short-${index}`));
+    const harness = ordinanceHarness(
+      vi.fn(async () => ordinancePage(1, 1, 101, shortPage)),
+    );
+
+    await expect(harness.handler(scheduleEvent())).rejects.toThrow(
+      "law.go.kr search scope 1 page 1 was incomplete: expected 100 records, metadata reported 99, parsed 99",
+    );
+    expectNoOrdinanceEffects(harness);
+  });
+
+  it("rejects repeated whole-page ordinance content within a scope", async () => {
+    const repeated = Array.from({ length: 100 }, (_, index) => ordinanceRecord(`repeat-${index}`));
+    const searchOrdinances = vi.fn<OrdinanceClient["searchOrdinances"]>(
+      async (_query = "병역명문가", page = 1) => ordinancePage(1, page, 200, repeated),
+    );
+    const harness = ordinanceHarness(searchOrdinances);
+
+    await expect(harness.handler(scheduleEvent())).rejects.toThrow(
+      "law.go.kr search scope 1 repeated page content at page 2",
+    );
+    expectNoOrdinanceEffects(harness);
+  });
+
+  it("rejects identical record content repeated on a partial final page", async () => {
+    const repeatedRecord = ordinanceRecord("partial-repeat");
+    const firstPage = [
+      repeatedRecord,
+      ...Array.from({ length: 99 }, (_, index) => ordinanceRecord(`partial-${index}`)),
+    ];
+    const searchOrdinances = vi.fn<OrdinanceClient["searchOrdinances"]>(
+      async (_query = "병역명문가", page = 1) => page === 1
+        ? ordinancePage(1, 1, 101, firstPage)
+        : ordinancePage(1, 2, 101, [repeatedRecord]),
+    );
+    const harness = ordinanceHarness(searchOrdinances);
+
+    await expect(harness.handler(scheduleEvent())).rejects.toThrow(
+      "law.go.kr search scope 1 repeated record content at page 2",
+    );
+    expectNoOrdinanceEffects(harness);
+  });
+
+  it("rejects a zero-result ordinance scope after another scope completes", async () => {
+    const searchOrdinances = vi.fn<OrdinanceClient["searchOrdinances"]>(
+      async (_query = "병역명문가", _page = 1, _display = 100, search = 1) => search === 1
+        ? ordinancePage(1, 1, 1, [ordinanceRecord("scope-one")])
+        : ordinancePage(2, 1, 0, []),
+    );
+    const harness = ordinanceHarness(searchOrdinances);
+
+    await expect(harness.handler(scheduleEvent())).rejects.toThrow(
+      "law.go.kr search scope 2 returned no ordinance records",
+    );
+    expectNoOrdinanceEffects(harness);
   });
 
   it("stops ordinance detail enrichment before the execution safety budget expires", async () => {
-    const getMatchingArticles = vi.fn(async () => [] as string[]);
     const monotonicNow = vi.fn()
       .mockReturnValueOnce(0)
       .mockReturnValue(8 * 60 * 1_000);
-    const handler = createOrdinanceIngestHandler({
-      repository: new FakeRepository(),
-      storage: new FakeStorage(),
-      clock: fixedClock,
-      monotonicNow,
-      client: {
-        searchOrdinances: vi.fn(async () => [{
-          id: "ordinance-1",
-          title: "테스트 조례",
-          localGovernment: "테스트시",
-          url: "https://www.law.go.kr/ordinance/1",
-          matchingArticles: []
-        }]),
-        getMatchingArticles
-      }
-    });
-
-    await expect(handler(scheduleEvent())).rejects.toThrow(
-      "law.go.kr ingestion exceeded its execution safety budget"
+    const searchOrdinances = vi.fn<OrdinanceClient["searchOrdinances"]>(
+      async (_query = "병역명문가", _page = 1, _display = 100, search = 1) =>
+        ordinancePage(search, 1, 1, [ordinanceRecord("ordinance-1")]),
     );
-    expect(getMatchingArticles).not.toHaveBeenCalled();
+    const harness = ordinanceHarness(searchOrdinances, monotonicNow);
+
+    await expect(harness.handler(scheduleEvent())).rejects.toThrow(
+      "law.go.kr ingestion exceeded its execution safety budget",
+    );
+    expectNoOrdinanceEffects(harness);
   });
 
   it("rejects more than 2,000 unique ordinances before detail enrichment", async () => {
-    const getMatchingArticles = vi.fn(async () => [] as string[]);
-    const searchOrdinances = vi.fn(async (_query?: string, page = 1) =>
-      Array.from({ length: 100 }, (_, index) => ({
-        id: `ordinance-${page}-${index}`,
-        title: `테스트 조례 ${page}-${index}`,
-        localGovernment: "테스트시",
-        url: `https://www.law.go.kr/ordinance/${page}-${index}`,
-        matchingArticles: []
-      }))
+    const searchOrdinances = vi.fn<OrdinanceClient["searchOrdinances"]>(
+      async (_query = "병역명문가", page = 1, _display = 100, search = 1) => {
+        const totalCount = search === 1 ? 2_000 : 1;
+        const records = Array.from({ length: Math.min(100, totalCount - ((page - 1) * 100)) }, (_, index) =>
+          ordinanceRecord(`scope-${search}-${page}-${index}`));
+        return ordinancePage(search, page, totalCount, records);
+      },
     );
-    const handler = createOrdinanceIngestHandler({
-      repository: new FakeRepository(),
-      storage: new FakeStorage(),
-      clock: fixedClock,
-      client: { searchOrdinances, getMatchingArticles }
-    });
+    const harness = ordinanceHarness(searchOrdinances);
 
-    await expect(handler(scheduleEvent())).rejects.toThrow(
-      "law.go.kr search exceeded the 2,000 unique record safety limit"
+    await expect(harness.handler(scheduleEvent())).rejects.toThrow(
+      "law.go.kr search exceeded the 2,000 unique record safety limit",
     );
     expect(searchOrdinances).toHaveBeenCalledTimes(21);
-    expect(getMatchingArticles).not.toHaveBeenCalled();
+    expectNoOrdinanceEffects(harness);
   });
 
   it("reserves weekly deliveries before sending and suppresses duplicate invocation", async () => {

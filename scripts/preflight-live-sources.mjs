@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { readFile } from "node:fs/promises";
 import {
+  hashCanonical,
   LawApiClient,
   normalizeMmaFacilities,
   normalizeMmaNotices,
@@ -55,21 +56,54 @@ try {
   const recordsById = new Map();
   const searchCounts = {};
   for (const scope of [1, 2]) {
-    let scopeCount = 0;
-    for (let page = 1; page <= 50; page += 1) {
-      const records = await law.searchOrdinances(undefined, page, 100, scope);
-      scopeCount += records.length;
-      for (const record of records) {
-        recordsById.set(record.id, record);
+    const expectedSection = scope === 1 ? "ordinNm" : "bdyText";
+    const pageFingerprints = new Set();
+    const recordFingerprints = new Set();
+    let expectedTotal;
+    let totalPages = 1;
+    let rawRecordCount = 0;
+
+    for (let requestedPage = 1; requestedPage <= totalPages; requestedPage += 1) {
+      const result = await law.searchOrdinances(undefined, requestedPage, 100, scope);
+      validateLawSearchPage(result, scope, requestedPage, expectedSection, expectedTotal);
+      if (expectedTotal === undefined) {
+        expectedTotal = result.totalCount;
+        totalPages = Math.ceil(expectedTotal / 100);
+        if (totalPages > 50) throw new Error("law.go.kr preflight exceeded the 50 page safety limit");
+      }
+
+      const expectedPageSize = Math.min(100, expectedTotal - ((requestedPage - 1) * 100));
+      if (result.rowCount !== expectedPageSize || result.records.length !== expectedPageSize) {
+        throw new Error(
+          `law.go.kr preflight scope ${scope} page ${requestedPage} was incomplete: expected ${expectedPageSize} records, metadata reported ${result.rowCount}, parsed ${result.records.length}`,
+        );
+      }
+
+      const fingerprint = lawPageFingerprint(result.records);
+      if (pageFingerprints.has(fingerprint)) {
+        throw new Error(`law.go.kr preflight scope ${scope} repeated page content at page ${requestedPage}`);
+      }
+      pageFingerprints.add(fingerprint);
+      rawRecordCount += result.records.length;
+
+      for (const record of result.records) {
+        const recordFingerprint = hashCanonical(record);
+        if (recordFingerprints.has(recordFingerprint)) {
+          throw new Error(`law.go.kr preflight scope ${scope} repeated record content at page ${requestedPage}`);
+        }
+        recordFingerprints.add(recordFingerprint);
+
+        recordsById.set(record.id, preferLawOrdinance(recordsById.get(record.id), record));
         if (recordsById.size > 2_000) {
           throw new Error("law.go.kr preflight exceeded the 2,000 unique record safety limit");
         }
       }
-      if (records.length < 100) break;
-      if (page === 50) throw new Error("law.go.kr preflight exceeded the page safety limit");
     }
-    searchCounts[scope] = scopeCount;
-    if (scopeCount === 0) throw new Error("law.go.kr preflight returned zero ordinances for a search scope");
+
+    if (rawRecordCount !== expectedTotal) {
+      throw new Error(`law.go.kr preflight scope ${scope} returned ${rawRecordCount} raw records, expected ${expectedTotal}`);
+    }
+    searchCounts[scope] = rawRecordCount;
   }
   const detailSamples = [];
   for (const record of [...recordsById.values()].slice(0, 3)) {
@@ -154,4 +188,44 @@ async function fetchText(url, maxBytes, init = {}) {
   const body = await response.text();
   if (Buffer.byteLength(body, "utf8") > maxBytes) throw new Error("Source preflight response is too large");
   return body;
+}
+
+function validateLawSearchPage(result, scope, requestedPage, expectedSection, expectedTotal) {
+  if (result.page !== requestedPage) {
+    throw new Error(`law.go.kr preflight scope ${scope} page mismatch: expected ${requestedPage}, received ${result.page}`);
+  }
+  if (result.target !== "ordin") {
+    throw new Error(`law.go.kr preflight scope ${scope} returned unexpected target ${result.target}`);
+  }
+  if (result.section !== expectedSection) {
+    throw new Error(`law.go.kr preflight scope ${scope} returned unexpected section ${result.section}`);
+  }
+  if (!Number.isSafeInteger(result.totalCount) || result.totalCount <= 0) {
+    throw new Error(`law.go.kr preflight scope ${scope} returned no ordinance records`);
+  }
+  if (expectedTotal !== undefined && result.totalCount !== expectedTotal) {
+    throw new Error(`law.go.kr preflight scope ${scope} total changed from ${expectedTotal} to ${result.totalCount}`);
+  }
+}
+
+function lawPageFingerprint(records) {
+  const semanticRecords = records
+    .map((record) => ({ id: record.id, hash: hashCanonical(record) }))
+    .sort((left, right) => left.id.localeCompare(right.id) || left.hash.localeCompare(right.hash));
+  return hashCanonical(semanticRecords);
+}
+
+function preferLawOrdinance(current, candidate) {
+  if (!current) return candidate;
+  const currentTimestamp = newestLawOrdinanceTimestamp(current);
+  const candidateTimestamp = newestLawOrdinanceTimestamp(candidate);
+  if (candidateTimestamp !== currentTimestamp) return candidateTimestamp > currentTimestamp ? candidate : current;
+  return hashCanonical(candidate) > hashCanonical(current) ? candidate : current;
+}
+
+function newestLawOrdinanceTimestamp(record) {
+  const timestamps = [record.updatedAt, record.promulgatedAt, record.effectiveAt]
+    .map((value) => value ? Date.parse(value) : Number.NaN)
+    .filter(Number.isFinite);
+  return timestamps.length ? Math.max(...timestamps) : Number.NEGATIVE_INFINITY;
 }
