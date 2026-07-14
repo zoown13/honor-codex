@@ -10,13 +10,15 @@ import {
   TransactWriteCommand,
   UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
-import type { BenefitChange, PushSubscriptionRecord } from "@honor/core";
-import { BulkReviewConflictError } from "./contracts.js";
+import type { BenefitChange, DatasetManifest, PushSubscriptionRecord } from "@honor/core";
+import { BulkReviewConflictError, PublicationConflictError } from "./contracts.js";
 import type {
   AppRepository,
+  BeginPublicationResult,
   BulkReviewChunkResult,
   BulkReviewOperation,
   DeliveryReservation,
+  PublicationOperation,
   StoredSubscription,
 } from "./contracts.js";
 import { reviewSourceIdentity } from "./ingestion.js";
@@ -319,17 +321,192 @@ export class DynamoAppRepository implements AppRepository {
     };
   }
 
-  async markChangesPublished(changeIds: readonly string[], at: string): Promise<void> {
-    for (const id of changeIds) {
-      await this.#client.send(new UpdateCommand({
+  async getPublicationOperation(): Promise<PublicationOperation | undefined> {
+    const result = await this.#client.send(new GetCommand({
+      TableName: this.#tableName,
+      Key: { pk: "PUBLICATION", sk: "ACTIVE" },
+      ConsistentRead: true,
+    }));
+    return result.Item ? fromItem<PublicationOperation>(result.Item) : undefined;
+  }
+
+  async beginPublication(value: PublicationOperation): Promise<BeginPublicationResult> {
+    try {
+      await this.#client.send(new PutCommand({
         TableName: this.#tableName,
-        Key: { pk: "CHANGE", sk: `CHG#${id}` },
-        UpdateExpression: "SET #status = :published, publishedAt = :at",
-        ConditionExpression: "#status IN (:approved, :auto)",
-        ExpressionAttributeNames: { "#status": "status" },
-        ExpressionAttributeValues: {
-          ":published": "PUBLISHED", ":at": at, ":approved": "APPROVED", ":auto": "AUTO_APPROVED",
+        Item: {
+          pk: "PUBLICATION",
+          sk: "ACTIVE",
+          entityType: "PUBLICATION_OPERATION",
+          ...value,
         },
+        ConditionExpression: "attribute_not_exists(pk) OR #status IN (:completed, :failed)",
+        ExpressionAttributeNames: { "#status": "status" },
+        ExpressionAttributeValues: { ":completed": "COMPLETED", ":failed": "FAILED" },
+      }));
+      return { operation: value, created: true };
+    } catch (error) {
+      if (!isConditionalFailure(error)) throw error;
+      const current = await this.getPublicationOperation();
+      if (current?.id === value.id && current.fingerprint === value.fingerprint) {
+        return { operation: current, created: false };
+      }
+      throw new PublicationConflictError();
+    }
+  }
+
+  async stagePublication(
+    operationId: string,
+    manifest: DatasetManifest,
+    at: string,
+  ): Promise<PublicationOperation> {
+    const result = await this.#client.send(new UpdateCommand({
+      TableName: this.#tableName,
+      Key: { pk: "PUBLICATION", sk: "ACTIVE" },
+      UpdateExpression: "SET #status = :staged, manifest = :manifest, updatedAt = :at",
+      ConditionExpression: "id = :id AND #status = :preparing",
+      ExpressionAttributeNames: { "#status": "status" },
+      ExpressionAttributeValues: {
+        ":id": operationId,
+        ":preparing": "PREPARING",
+        ":staged": "STAGED",
+        ":manifest": manifest,
+        ":at": at,
+      },
+      ReturnValues: "ALL_NEW",
+    }));
+    return fromItem<PublicationOperation>(result.Attributes ?? {});
+  }
+
+  async recordPublicationJob(
+    operationId: string,
+    jobId: string,
+    at: string,
+  ): Promise<PublicationOperation> {
+    const result = await this.#client.send(new UpdateCommand({
+      TableName: this.#tableName,
+      Key: { pk: "PUBLICATION", sk: "ACTIVE" },
+      UpdateExpression: "SET #status = :deploying, deploymentJobId = :jobId, updatedAt = :at",
+      ConditionExpression: [
+        "id = :id",
+        "(#status = :staged OR (#status = :deploying AND deploymentJobId = :jobId))",
+      ].join(" AND "),
+      ExpressionAttributeNames: { "#status": "status" },
+      ExpressionAttributeValues: {
+        ":id": operationId,
+        ":staged": "STAGED",
+        ":deploying": "DEPLOYING",
+        ":jobId": jobId,
+        ":at": at,
+      },
+      ReturnValues: "ALL_NEW",
+    }));
+    return fromItem<PublicationOperation>(result.Attributes ?? {});
+  }
+
+  async markPublicationDeployed(
+    operationId: string,
+    jobId: string,
+    at: string,
+  ): Promise<PublicationOperation> {
+    const result = await this.#client.send(new UpdateCommand({
+      TableName: this.#tableName,
+      Key: { pk: "PUBLICATION", sk: "ACTIVE" },
+      UpdateExpression: [
+        "SET #status = :deployed",
+        "deployedAt = if_not_exists(deployedAt, :at)",
+        "updatedAt = :at",
+      ].join(", "),
+      ConditionExpression: [
+        "id = :id",
+        "deploymentJobId = :jobId",
+        "#status IN (:deploying, :deployed)",
+      ].join(" AND "),
+      ExpressionAttributeNames: { "#status": "status" },
+      ExpressionAttributeValues: {
+        ":id": operationId,
+        ":jobId": jobId,
+        ":deploying": "DEPLOYING",
+        ":deployed": "DEPLOYED",
+        ":at": at,
+      },
+      ReturnValues: "ALL_NEW",
+    }));
+    return fromItem<PublicationOperation>(result.Attributes ?? {});
+  }
+
+  async completePublication(operationId: string, at: string): Promise<PublicationOperation> {
+    const result = await this.#client.send(new UpdateCommand({
+      TableName: this.#tableName,
+      Key: { pk: "PUBLICATION", sk: "ACTIVE" },
+      UpdateExpression: [
+        "SET #status = :completed",
+        "completedAt = if_not_exists(completedAt, :at)",
+        "updatedAt = :at",
+      ].join(", "),
+      ConditionExpression: "id = :id AND #status IN (:deployed, :completed)",
+      ExpressionAttributeNames: { "#status": "status" },
+      ExpressionAttributeValues: {
+        ":id": operationId,
+        ":deployed": "DEPLOYED",
+        ":completed": "COMPLETED",
+        ":at": at,
+      },
+      ReturnValues: "ALL_NEW",
+    }));
+    return fromItem<PublicationOperation>(result.Attributes ?? {});
+  }
+
+  async failPublication(operationId: string, at: string, error: string): Promise<void> {
+    await this.#client.send(new UpdateCommand({
+      TableName: this.#tableName,
+      Key: { pk: "PUBLICATION", sk: "ACTIVE" },
+      UpdateExpression: "SET #status = :failed, failedAt = :at, updatedAt = :at, #error = :error",
+      ConditionExpression: "id = :id AND #status IN (:preparing, :staged, :deploying)",
+      ExpressionAttributeNames: { "#status": "status", "#error": "error" },
+      ExpressionAttributeValues: {
+        ":id": operationId,
+        ":preparing": "PREPARING",
+        ":staged": "STAGED",
+        ":deploying": "DEPLOYING",
+        ":failed": "FAILED",
+        ":at": at,
+        ":error": error.slice(0, 500),
+      },
+    }));
+  }
+
+  async markChangesPublished(
+    changeIds: readonly string[],
+    at: string,
+    operationId: string,
+  ): Promise<void> {
+    const ids = [...new Set(changeIds)];
+    for (let index = 0; index < ids.length; index += 100) {
+      await this.#client.send(new TransactWriteCommand({
+        TransactItems: ids.slice(index, index + 100).map((id) => ({
+          Update: {
+            TableName: this.#tableName,
+            Key: { pk: "CHANGE", sk: `CHG#${id}` },
+            UpdateExpression: [
+              "SET #status = :published",
+              "publishedAt = if_not_exists(publishedAt, :at)",
+              "publishOperationId = if_not_exists(publishOperationId, :operationId)",
+            ].join(", "),
+            ConditionExpression: [
+              "#status IN (:approved, :auto)",
+              "OR (#status = :published AND publishOperationId = :operationId)",
+            ].join(" "),
+            ExpressionAttributeNames: { "#status": "status" },
+            ExpressionAttributeValues: {
+              ":published": "PUBLISHED",
+              ":at": at,
+              ":operationId": operationId,
+              ":approved": "APPROVED",
+              ":auto": "AUTO_APPROVED",
+            },
+          },
+        })),
       }));
     }
   }
