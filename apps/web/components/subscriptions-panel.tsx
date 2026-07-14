@@ -229,10 +229,10 @@ export function SubscriptionsPanel({
                   id="otp-code"
                   inputMode="numeric"
                   autoComplete="one-time-code"
-                  pattern="[0-9]{6}"
-                  maxLength={6}
+                  pattern="[0-9]{6,8}"
+                  maxLength={8}
                   required
-                  placeholder="6자리 번호"
+                  placeholder="6~8자리 번호"
                   value={code}
                   onChange={(event) => setCode(event.target.value.replace(/\D/g, ""))}
                 />
