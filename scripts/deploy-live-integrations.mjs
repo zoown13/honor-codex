@@ -9,6 +9,12 @@ import { fileURLToPath } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const configPath = path.join(root, ".env.deploy.local");
 const configRelativePath = ".env.deploy.local";
+const sourceUrlParameters = {
+  MmaFacilitiesUrl: { envKey: "MMA_FACILITIES_URL", defaultValue: "https://open.mma.go.kr/caisGGGS/bymmgListAjaxJsonCall.json" },
+  MmaNoticesUrl: { envKey: "MMA_NOTICES_URL", defaultValue: "https://www.mma.go.kr/hall/board/boardList.do?mc=mma0003395&gesipan_id=217" },
+  LawApiBaseUrl: { envKey: "LAW_API_BASE_URL", defaultValue: "https://www.law.go.kr/DRF" }
+};
+
 const cliArgs = process.argv.slice(2);
 if (cliArgs[0] === "--") cliArgs.shift();
 const [mode, source, extraArgument] = cliArgs;
@@ -43,6 +49,15 @@ if (mode === "configure") {
   const env = parseEnv(await readFile(configPath, "utf8"));
   const kakaoKey = required(env, "NEXT_PUBLIC_KAKAO_MAP_APP_KEY");
   const lawOc = required(env, "LAW_API_OC");
+  for (const [parameter, { envKey, defaultValue }] of Object.entries(sourceUrlParameters)) {
+    const value = env[envKey]?.trim() || defaultValue;
+    let parsed;
+    try { parsed = new URL(value); }
+    catch { fail(envKey + " must be a valid HTTPS URL"); }
+    if (parsed.protocol !== "https:") fail(envKey + " must be a valid HTTPS URL");
+    parameters.push(`HonorBenefitsPilotStack:${parameter}=${value}`);
+  }
+
   if (env.MMA_LIVE_INGESTION_ENABLED?.trim().toLowerCase() !== "true") {
     fail("MMA_LIVE_INGESTION_ENABLED must be true in .env.deploy.local");
   }

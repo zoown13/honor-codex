@@ -47,8 +47,8 @@ BuildSpec, CustomHeaders, 환경변수처럼 Amplify App 설정과 소스가 함
 
 1. `PUBLISH_ENABLED=false`를 확인하고 시설·공지·조례의 세 `*IngestionScheduleEnabled` 파라미터를 각각 `false`로 두어 수집 EventBridge 규칙을 비활성 상태로 둡니다. 주간 알림 규칙은 수집 게이트와 독립적이므로 기존 `PUBLISHED` 변경·구독·delivery가 없는지도 별도로 확인합니다.
 2. 먼저 `pnpm deploy:live -- gate-off`를 실행하고 세 수집 규칙이 `DISABLED`인지 확인합니다. 그다음 Git에서 무시되는 `.env.deploy.local`에 키를 저장하고 `pnpm preflight:live`로 제한된 읽기 요청의 상태·형식·타임아웃과 JSONP 또는 JSON 파싱을 확인합니다. 이 단계에서는 DynamoDB와 S3에 쓰지 않습니다.
-3. 로컬 typecheck·단위 테스트·CDK synth와 사전 검사가 모두 통과하면 `pnpm deploy:live -- configure`로 법제처 `OC`, Kakao 키와 병무청 실수집 스위치를 배포합니다. 세 수집 규칙이 계속 `DISABLED`인지 다시 확인하며 파라미터·로그·셸 기록에 비밀값을 출력하지 않습니다.
-4. 소스 PR을 병합해 Amplify 빌드·브라우저 스모크 테스트를 통과시킨 뒤, `gate-on facilities`, `gate-on notices`, `gate-on ordinances`를 원천별로 한 번에 하나만 실행합니다. 현재 운영자에게 Lambda 직접 호출 권한이 없으므로 각 원천의 다음 예약 실행을 한 번만 허용하고 실행 직후 같은 원천을 `gate-off <원천>`으로 끕니다.
+3. 로컬 typecheck·단위 테스트·CDK synth와 사전 검사가 모두 통과하면 `pnpm deploy:live -- configure`로 법제처 `OC`, Kakao 키, 병무청 실수집 스위치와 사전검증에 사용한 원천 URL을 함께 배포합니다. 세 수집 규칙이 계속 `DISABLED`인지 다시 확인하며 파라미터·로그·셸 기록에 비밀값을 출력하지 않습니다.
+4. 소스 PR을 병합해 Amplify 빌드·브라우저 스모크 테스트를 통과시킨 뒤, 최소 권한의 `lambda:InvokeFunction`으로 시설·공지·조례 Lambda를 원천별로 한 번씩 동기 호출하고 매번 결과를 검증합니다. 직접 호출 권한이 없을 때만 `gate-on <원천>`으로 다음 예약 실행을 한 번 허용하고 실행 직후 `gate-off <원천>`으로 끕니다.
 5. 각 실행 후 다음 원천으로 넘어가기 전에 Lambda 오류, DLQ, S3 원문 스냅샷, 정규화 건수와 DynamoDB 변경 건수를 확인합니다. 시설 결과가 100건 미만이거나, 공지·조례가 0건이거나, 조례 고유 레코드가 2,000건을 넘거나, 사전에 기록한 정상 범위를 크게 벗어나면 실패로 취급합니다. 2026-07-14 사전검증 기준 조례 합집합은 1,432건입니다.
 6. 활성 데이터가 20건 미만인 희소 기준선의 모든 변경은 배치 가드에 의해 `HIGH/PENDING`이어야 합니다. 공지 수집은 페이지 목록에서 사라진 과거 공지를 삭제하지 않는 upsert-only 방식입니다. `AUTO_APPROVED`가 하나라도 있거나 예상 밖 대량 삭제가 있으면 스케줄을 켜거나 재실행하지 말고 원인을 수정합니다.
 7. 검증 전후의 `published/manifest.json` version ID가 같고 Amplify 배포 작업, 알림 delivery 레코드, SES 발송 지표가 증가하지 않았는지 확인합니다. 하나라도 변했으면 게시·알림 부작용으로 보고 스케줄을 비활성 상태로 유지합니다.
