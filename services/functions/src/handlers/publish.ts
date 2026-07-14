@@ -117,19 +117,13 @@ export function createPublishHandler(
     }
 
     if (operation.status === "STAGED") {
-      let jobId: string;
-      try {
-        const startedJobId = await deps.deployment.start();
-        if (!startedJobId) throw new Error("Amplify deployment is not configured");
-        jobId = startedJobId;
-      } catch (startError) {
-        // StartJob can be accepted by AWS even if the response is lost. Keep the
-        // exact staged manifest and operation so a retry can safely deploy it again.
-        throw startError;
-      }
+      // StartJob can be accepted by AWS even if the response is lost. Keep the
+      // exact staged manifest and operation so a retry can safely deploy it again.
+      const jobId = await deps.deployment.start();
+      if (!jobId) throw new Error("Amplify deployment is not configured");
       try {
         operation = await deps.repository.recordPublicationJob(operation.id, jobId, now);
-      } catch (recordError) {
+      } catch (_recordError) {
         const stored = await deps.repository.getPublicationOperation();
         if (stored?.id === operation.id
           && stored.status === "DEPLOYING"
