@@ -42,10 +42,49 @@ export interface BulkReviewChunkResult {
   processedCount: number;
 }
 
+export interface PublicationOperation {
+  id: string;
+  fingerprint: string;
+  changeIds: string[];
+  initialBaseline: boolean;
+  status: "PREPARING" | "STAGED" | "DEPLOYING" | "DEPLOYED" | "COMPLETED" | "FAILED";
+  createdAt: string;
+  updatedAt: string;
+  manifest?: DatasetManifest;
+  manifestRollbackToken?: string;
+  deploymentJobId?: string;
+  deployedAt?: string;
+  completedAt?: string;
+  failedAt?: string;
+  error?: string;
+}
+
+export interface BeginPublicationResult {
+  operation: PublicationOperation;
+  created: boolean;
+}
+
 export class BulkReviewConflictError extends Error {
   constructor(message = "Bulk review operation conflicted with current change state") {
     super(message);
     this.name = "BulkReviewConflictError";
+  }
+}
+
+export class PublicationConflictError extends Error {
+  constructor(message = "Another publication operation is already active") {
+    super(message);
+    this.name = "PublicationConflictError";
+  }
+}
+
+export class DeploymentOutcomeUnknownError extends Error {
+  readonly jobId: string;
+
+  constructor(jobId: string, message = `Amplify deployment ${jobId} outcome is not yet known`) {
+    super(message);
+    this.name = "DeploymentOutcomeUnknownError";
+    this.jobId = jobId;
   }
 }
 
@@ -65,20 +104,39 @@ export interface AppRepository {
   getBulkReviewOperation(operationId: string): Promise<BulkReviewOperation | undefined>;
   putBulkReviewOperation(value: BulkReviewOperation): Promise<BulkReviewOperation>;
   approveBulkReviewChunk(operationId: string, at: string, maxChanges: number): Promise<BulkReviewChunkResult>;
-  markChangesPublished(changeIds: readonly string[], at: string): Promise<void>;
+  getPublicationOperation(): Promise<PublicationOperation | undefined>;
+  beginPublication(value: PublicationOperation): Promise<BeginPublicationResult>;
+  stagePublication(
+    operationId: string,
+    manifest: DatasetManifest,
+    manifestRollbackToken: string,
+    at: string,
+  ): Promise<PublicationOperation>;
+  recordPublicationJob(operationId: string, jobId: string, at: string): Promise<PublicationOperation>;
+  markPublicationDeployed(operationId: string, jobId: string, at: string): Promise<PublicationOperation>;
+  completePublication(operationId: string, at: string): Promise<PublicationOperation>;
+  failPublication(operationId: string, at: string, error: string): Promise<void>;
+  markChangesPublished(changeIds: readonly string[], at: string, operationId: string): Promise<void>;
   reserveDelivery(value: DeliveryReservation): Promise<boolean>;
   finishDelivery(userId: string, key: string, status: "SENT" | "FAILED", at: string, error?: string): Promise<void>;
+}
+
+export interface DatasetPublication {
+  manifest: DatasetManifest;
+  rollbackToken: string;
 }
 
 export interface DatasetStorage {
   loadBenefits(): Promise<Benefit[]>;
   saveSnapshot(source: string, retrievedAt: string, body: string): Promise<string>;
   saveCandidate(source: string, retrievedAt: string, benefits: readonly Benefit[]): Promise<string>;
-  publish(benefits: readonly Benefit[], generatedAt: string): Promise<DatasetManifest>;
+  publish(benefits: readonly Benefit[], generatedAt: string): Promise<DatasetPublication>;
+  rollback(rollbackToken: string): Promise<void>;
 }
 
 export interface DeploymentTrigger {
   start(): Promise<string | undefined>;
+  wait(jobId: string): Promise<void>;
 }
 
 export interface NotificationTrigger {
