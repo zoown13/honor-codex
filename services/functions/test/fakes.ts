@@ -4,19 +4,23 @@ import type {
   DatasetManifest,
   PushSubscriptionRecord,
 } from "@honor/core";
+import { BulkReviewConflictError } from "../src/shared/contracts.js";
 import type {
   AppRepository,
+  BulkReviewOperation,
   DatasetStorage,
   DeliveryReservation,
   StoredSubscription,
 } from "../src/shared/contracts.js";
 import type { HttpEvent } from "../src/shared/http.js";
+import { inferReviewSource } from "../src/shared/ingestion.js";
 
 export class FakeRepository implements AppRepository {
   subscriptions: StoredSubscription[] = [];
   pushes: PushSubscriptionRecord[] = [];
   changes: BenefitChange[] = [];
   deliveries = new Map<string, DeliveryReservation>();
+  bulkReviewOperations = new Map<string, BulkReviewOperation>();
 
   async listSubscriptions(userId: string) { return this.subscriptions.filter((item) => item.userId === userId); }
   async putSubscription(value: StoredSubscription) {
@@ -61,6 +65,55 @@ export class FakeRepository implements AppRepository {
     if (!change) throw new Error("Change was not found or is no longer pending");
     Object.assign(change, { status: decision, reviewedBy: reviewer, reviewedAt: at });
     return change;
+  }
+  async getBulkReviewOperation(operationId: string) {
+    return this.bulkReviewOperations.get(operationId);
+  }
+  async putBulkReviewOperation(value: BulkReviewOperation) {
+    const existing = this.bulkReviewOperations.get(value.id);
+    if (existing) return existing;
+    this.bulkReviewOperations.set(value.id, value);
+    return value;
+  }
+  async approveBulkReviewChunk(operationId: string, at: string, maxChanges: number) {
+    if (!Number.isInteger(maxChanges) || maxChanges < 1 || maxChanges > 100) {
+      throw new Error("Bulk review chunk size must be between 1 and 100");
+    }
+    const operation = this.bulkReviewOperations.get(operationId);
+    if (!operation) throw new BulkReviewConflictError("Bulk review operation was not found");
+    if (operation.status === "COMPLETED") return { operation, processedCount: 0 };
+    const ids = operation.changeIds.slice(operation.approvedCount, operation.approvedCount + Math.min(maxChanges, 99));
+    const changes = ids.map((id) => this.changes.find((change) => change.id === id));
+    if (!ids.length || changes.some((change) => change === undefined
+      || change.status !== "PENDING"
+      || change.risk !== "HIGH"
+      || change.action !== "ADD"
+      || change.before !== undefined
+      || change.after === undefined
+      || change.detectedAt !== operation.detectedAt
+      || inferReviewSource(change) !== operation.source)) {
+      throw new BulkReviewConflictError();
+    }
+    for (const change of changes as BenefitChange[]) {
+      Object.assign(change, {
+        source: operation.source,
+        status: "APPROVED",
+        reviewedAt: at,
+        reviewedBy: operation.reviewer,
+        reviewOperationId: operation.id,
+        reviewReason: operation.reason,
+      });
+    }
+    const approvedCount = operation.approvedCount + ids.length;
+    const complete = approvedCount === operation.expectedCount;
+    const updated: BulkReviewOperation = {
+      ...operation,
+      approvedCount,
+      updatedAt: at,
+      ...(complete ? { status: "COMPLETED", completedAt: at } : {}),
+    };
+    this.bulkReviewOperations.set(operationId, updated);
+    return { operation: updated, processedCount: ids.length };
   }
   async markChangesPublished(ids: readonly string[], at: string) {
     for (const change of this.changes) if (ids.includes(change.id)) Object.assign(change, { status: "PUBLISHED", publishedAt: at });

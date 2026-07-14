@@ -82,3 +82,35 @@ test("precise device coordinates never enter application network requests", asyn
   expect(networkText).not.toContain(String(longitude));
   await context.close();
 });
+
+test("owner can explicitly approve one source batch without starting publish", async ({ page }) => {
+  const publishRequests: string[] = [];
+  page.on("request", (request) => {
+    if (request.url().includes("/v1/admin/publish")) publishRequests.push(request.url());
+  });
+
+  await page.goto("./");
+  await page.getByRole("button", { name: "소유자 검수" }).click();
+  await page.getByRole("button", { name: "이메일로 소유자 확인" }).click();
+  await page.getByLabel("알림 받을 이메일").fill("owner@example.com");
+  await page.getByRole("button", { name: "인증번호 받기" }).click();
+  await page.getByLabel("이메일 인증번호").fill("123456");
+  await page.getByRole("button", { name: "확인", exact: true }).click();
+
+  await page.getByRole("button", { name: "소유자 검수" }).click();
+  await expect(page.getByRole("heading", { name: "병무청 예우시설" })).toBeVisible();
+  await expect(page.getByText("승인과 게시는 분리되어 있습니다")).toBeVisible();
+  await page.getByRole("button", { name: "병무청 예우시설 1건 일괄 승인" }).click();
+
+  const dialog = page.getByRole("dialog", { name: "병무청 예우시설 1건 승인" });
+  const approveButton = dialog.getByRole("button", { name: "1건 승인 시작" });
+  await expect(approveButton).toBeDisabled();
+  await dialog.getByRole("checkbox").check();
+  await dialog.getByLabel("확인 문구 입력").fill("APPROVE MMA_FACILITIES 1");
+  await expect(approveButton).toBeEnabled();
+  await approveButton.click();
+
+  await expect(page.getByText("병무청 예우시설 1건 승인을 완료했습니다.")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "승인 대기 2건" })).toBeVisible();
+  expect(publishRequests).toEqual([]);
+});

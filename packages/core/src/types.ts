@@ -96,6 +96,10 @@ export interface Subscription {
 
 export type ChangeRisk = "LOW" | "HIGH";
 export type ChangeAction = "ADD" | "UPDATE" | "DELETE";
+export type BenefitChangeSource =
+  | "MMA_FACILITIES"
+  | "MMA_NOTICES"
+  | "LAW_ORDINANCES";
 export type ChangeStatus =
   | "AUTO_APPROVED"
   | "PENDING"
@@ -113,8 +117,12 @@ export interface BenefitChange {
   before?: Benefit;
   after?: Benefit;
   detectedAt: string;
+  /** Explicit on new records; legacy records are strictly inferred from the benefit identity. */
+  source?: BenefitChangeSource;
   reviewedAt?: string;
   reviewedBy?: string;
+  reviewOperationId?: string;
+  reviewReason?: string;
   publishedAt?: string;
 }
 

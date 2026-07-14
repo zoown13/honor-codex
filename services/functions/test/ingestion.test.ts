@@ -54,7 +54,8 @@ describe("ingestion batch guard", () => {
     expect(repository.changes).toHaveLength(1);
     expect(repository.changes[0]).toMatchObject({
       benefitId: incoming.id,
-      action: "ADD"
+      action: "ADD",
+      source: "MMA_NOTICES",
     });
   });
 
@@ -77,7 +78,7 @@ describe("ingestion batch guard", () => {
     expect(result.autoApproved).toBe(0);
     expect(repository.changes).toHaveLength(101);
     expect(repository.changes.every(
-      (change) => change.risk === "HIGH" && change.status === "PENDING"
+      (change) => change.risk === "HIGH" && change.status === "PENDING" && change.source === "MMA_FACILITIES"
     )).toBe(true);
   });
 

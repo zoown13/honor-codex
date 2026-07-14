@@ -7,10 +7,19 @@ import {
   PutCommand,
   QueryCommand,
   ScanCommand,
+  TransactWriteCommand,
   UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
 import type { BenefitChange, PushSubscriptionRecord } from "@honor/core";
-import type { AppRepository, DeliveryReservation, StoredSubscription } from "./contracts.js";
+import { BulkReviewConflictError } from "./contracts.js";
+import type {
+  AppRepository,
+  BulkReviewChunkResult,
+  BulkReviewOperation,
+  DeliveryReservation,
+  StoredSubscription,
+} from "./contracts.js";
+import { reviewSourceIdentity } from "./ingestion.js";
 
 interface RepositoryOptions {
   tableName: string;
@@ -163,6 +172,153 @@ export class DynamoAppRepository implements AppRepository {
     }
   }
 
+  async getBulkReviewOperation(operationId: string): Promise<BulkReviewOperation | undefined> {
+    const result = await this.#client.send(new GetCommand({
+      TableName: this.#tableName,
+      Key: { pk: "REVIEW_OPERATION", sk: `OP#${operationId}` },
+      ConsistentRead: true,
+    }));
+    return result.Item ? fromItem<BulkReviewOperation>(result.Item) : undefined;
+  }
+
+  async putBulkReviewOperation(value: BulkReviewOperation): Promise<BulkReviewOperation> {
+    try {
+      await this.#client.send(new PutCommand({
+        TableName: this.#tableName,
+        Item: {
+          pk: "REVIEW_OPERATION",
+          sk: `OP#${value.id}`,
+          entityType: "BULK_REVIEW_OPERATION",
+          ...value,
+        },
+        ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)",
+      }));
+      return value;
+    } catch (error) {
+      if (!isConditionalFailure(error)) throw error;
+      const existing = await this.getBulkReviewOperation(value.id);
+      if (!existing) throw new BulkReviewConflictError("Review operation was created concurrently but could not be loaded");
+      return existing;
+    }
+  }
+
+  async approveBulkReviewChunk(
+    operationId: string,
+    at: string,
+    maxChanges: number,
+  ): Promise<BulkReviewChunkResult> {
+    if (!Number.isInteger(maxChanges) || maxChanges < 1 || maxChanges > 100) {
+      throw new Error("Bulk review chunk size must be between 1 and 100");
+    }
+    const operation = await this.getBulkReviewOperation(operationId);
+    if (!operation) throw new BulkReviewConflictError("Bulk review operation was not found");
+    if (operation.status === "COMPLETED") return { operation, processedCount: 0 };
+    if (operation.approvedCount < 0 || operation.approvedCount >= operation.expectedCount) {
+      throw new BulkReviewConflictError("Bulk review operation progress is invalid");
+    }
+
+    // DynamoDB transactions allow 100 actions; one is reserved for atomic operation progress.
+    const chunkSize = Math.min(maxChanges, 99);
+    const changeIds = operation.changeIds.slice(operation.approvedCount, operation.approvedCount + chunkSize);
+    if (!changeIds.length) throw new BulkReviewConflictError("Bulk review operation has no remaining change IDs");
+    const nextApprovedCount = operation.approvedCount + changeIds.length;
+    const complete = nextApprovedCount === operation.expectedCount;
+    const identity = reviewSourceIdentity(operation.source);
+
+    try {
+      await this.#client.send(new TransactWriteCommand({
+        TransactItems: [
+          {
+            Update: {
+              TableName: this.#tableName,
+              Key: { pk: "REVIEW_OPERATION", sk: `OP#${operation.id}` },
+              UpdateExpression: complete
+                ? "SET approvedCount = :next, updatedAt = :at, #status = :completed, completedAt = :at"
+                : "SET approvedCount = :next, updatedAt = :at",
+              ConditionExpression: "#status = :inProgress AND approvedCount = :current",
+              ExpressionAttributeNames: { "#status": "status" },
+              ExpressionAttributeValues: {
+                ":next": nextApprovedCount,
+                ":at": at,
+                ":inProgress": "IN_PROGRESS",
+                ":current": operation.approvedCount,
+                ...(complete ? { ":completed": "COMPLETED" } : {}),
+              },
+            },
+          },
+          ...changeIds.map((changeId) => ({
+            Update: {
+              TableName: this.#tableName,
+              Key: { pk: "CHANGE", sk: `CHG#${changeId}` },
+              UpdateExpression: [
+                "SET #status = :approved",
+                "reviewedAt = :at",
+                "reviewedBy = :reviewer",
+                "reviewOperationId = :operationId",
+                "reviewReason = :reason",
+                "#changeSource = :reviewSource",
+              ].join(", "),
+              ConditionExpression: [
+                "#status = :pending",
+                "risk = :high",
+                "#action = :add",
+                "attribute_not_exists(#before)",
+                "attribute_exists(#after)",
+                "detectedAt = :detectedAt",
+                "(#changeSource = :reviewSource OR (attribute_not_exists(#changeSource)",
+                "begins_with(benefitId, :benefitIdPrefix)",
+                "#after.#type = :benefitType",
+                "#after.#benefitSource.#system = :sourceSystem))",
+              ].join(" AND "),
+              ExpressionAttributeNames: {
+                "#status": "status",
+                "#action": "action",
+                "#before": "before",
+                "#after": "after",
+                "#type": "type",
+                "#benefitSource": "source",
+                "#system": "system",
+                "#changeSource": "source",
+              },
+              ExpressionAttributeValues: {
+                ":approved": "APPROVED",
+                ":pending": "PENDING",
+                ":high": "HIGH",
+                ":add": "ADD",
+                ":at": at,
+                ":reviewer": operation.reviewer,
+                ":operationId": operation.id,
+                ":reason": operation.reason,
+                ":reviewSource": operation.source,
+                ":detectedAt": operation.detectedAt,
+                ":benefitIdPrefix": identity.benefitIdPrefix,
+                ":benefitType": identity.benefitType,
+                ":sourceSystem": identity.sourceSystem,
+              },
+            },
+          })),
+        ],
+      }));
+    } catch (error) {
+      const current = await this.getBulkReviewOperation(operation.id);
+      if (current && (current.approvedCount > operation.approvedCount || current.status === "COMPLETED")) {
+        return { operation: current, processedCount: 0 };
+      }
+      if (isTransactionConflict(error)) throw new BulkReviewConflictError();
+      throw error;
+    }
+
+    return {
+      processedCount: changeIds.length,
+      operation: {
+        ...operation,
+        approvedCount: nextApprovedCount,
+        updatedAt: at,
+        ...(complete ? { status: "COMPLETED", completedAt: at } : {}),
+      },
+    };
+  }
+
   async markChangesPublished(changeIds: readonly string[], at: string): Promise<void> {
     for (const id of changeIds) {
       await this.#client.send(new UpdateCommand({
@@ -266,4 +422,14 @@ function fromItem<T>(item: Record<string, unknown>): T {
 function isConditionalFailure(error: unknown): boolean {
   return typeof error === "object" && error !== null && "name" in error
     && (error as { name?: string }).name === "ConditionalCheckFailedException";
+}
+
+function isTransactionConflict(error: unknown): boolean {
+  if (typeof error !== "object" || error === null || !("name" in error)
+    || (error as { name?: string }).name !== "TransactionCanceledException") return false;
+  const reasons = "CancellationReasons" in error
+    ? (error as { CancellationReasons?: Array<{ Code?: string }> }).CancellationReasons
+    : undefined;
+  return reasons === undefined || reasons.some((reason) =>
+    reason.Code === "ConditionalCheckFailed" || reason.Code === "TransactionConflict");
 }
