@@ -358,12 +358,18 @@ export class DynamoAppRepository implements AppRepository {
   async stagePublication(
     operationId: string,
     manifest: DatasetManifest,
+    manifestRollbackToken: string,
     at: string,
   ): Promise<PublicationOperation> {
     const result = await this.#client.send(new UpdateCommand({
       TableName: this.#tableName,
       Key: { pk: "PUBLICATION", sk: "ACTIVE" },
-      UpdateExpression: "SET #status = :staged, manifest = :manifest, updatedAt = :at",
+      UpdateExpression: [
+        "SET #status = :staged",
+        "manifest = :manifest",
+        "manifestRollbackToken = :manifestRollbackToken",
+        "updatedAt = :at",
+      ].join(", "),
       ConditionExpression: "id = :id AND #status = :preparing",
       ExpressionAttributeNames: { "#status": "status" },
       ExpressionAttributeValues: {
@@ -371,6 +377,7 @@ export class DynamoAppRepository implements AppRepository {
         ":preparing": "PREPARING",
         ":staged": "STAGED",
         ":manifest": manifest,
+        ":manifestRollbackToken": manifestRollbackToken,
         ":at": at,
       },
       ReturnValues: "ALL_NEW",
