@@ -667,6 +667,7 @@ export class HonorBenefitsPilotStack extends Stack {
     userPool.grant(pushSubscriptionsFunction, "cognito-idp:AdminDeleteUser");
     userPool.grant(authOtpFunction, "cognito-idp:AdminCreateUser");
     userPool.grant(authOtpFunction, "cognito-idp:AdminAddUserToGroup");
+    userPool.grant(authOtpFunction, "cognito-idp:AdminGetUser");
     authOtpFunction.addToRolePolicy(
       new iam.PolicyStatement({
         actions: [

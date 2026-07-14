@@ -50,33 +50,43 @@ describe("CognitoOtpProvider", () => {
     expect(send.mock.calls[1]?.[0]).toMatchObject({ input: { AuthFlow: "USER_AUTH" } });
   });
 
-  it("uses EMAIL_OTP_CODE and returns both OAuth tokens", async () => {
+  it("uses the Cognito username with EMAIL_OTP_CODE and returns both OAuth tokens", async () => {
     const send = vi.fn()
+      .mockResolvedValueOnce({ Username: "internal-user-id" })
       .mockResolvedValueOnce({
         AuthenticationResult: { AccessToken: "access-token", IdToken: "id-token" },
       })
       .mockResolvedValueOnce({
-        Username: "sub-1",
+        Username: "internal-user-id",
         UserAttributes: [
           { Name: "sub", Value: "sub-1" },
           { Name: "email", Value: "pilot@example.com" },
         ],
       });
     const provider = new CognitoOtpProvider({ send } as never);
-    await expect(provider.verify("pilot@example.com", "123456", "session", "client")).resolves.toMatchObject({
+    await expect(
+      provider.verify("pilot@example.com", "123456", "session", "client", "pool"),
+    ).resolves.toMatchObject({
       accessToken: "access-token",
       idToken: "id-token",
       userId: "sub-1",
     });
+    expect(send).toHaveBeenCalledTimes(3);
     expect(send.mock.calls[0]?.[0]).toMatchObject({
+      input: { UserPoolId: "pool", Username: "pilot@example.com" },
+    });
+    expect(send.mock.calls[1]?.[0]).toMatchObject({
       input: {
         ChallengeName: "EMAIL_OTP",
         ChallengeResponses: {
-          USERNAME: "pilot@example.com",
+          USERNAME: "internal-user-id",
           EMAIL_OTP_CODE: "123456",
         },
       },
     });
-    expect(send.mock.calls[0]?.[0]?.input.ChallengeResponses).not.toHaveProperty("EMAIL_OTP");
+    expect(send.mock.calls[1]?.[0]?.input.ChallengeResponses).not.toHaveProperty("EMAIL_OTP");
+    expect(send.mock.calls[2]?.[0]).toMatchObject({
+      input: { AccessToken: "access-token" },
+    });
   });
 });
