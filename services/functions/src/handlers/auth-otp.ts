@@ -1,6 +1,7 @@
 import {
   AdminAddUserToGroupCommand,
   AdminCreateUserCommand,
+  AdminGetUserCommand,
   CognitoIdentityProviderClient,
   GetUserCommand,
   InitiateAuthCommand,
@@ -26,7 +27,13 @@ export interface OtpVerifyResult {
 
 export interface OtpProvider {
   start(email: string, clientId: string, userPoolId: string, isAdmin: boolean): Promise<OtpStartResult>;
-  verify(email: string, code: string, session: string, clientId: string): Promise<Omit<OtpVerifyResult, "isAdmin">>;
+  verify(
+    email: string,
+    code: string,
+    session: string,
+    clientId: string,
+    userPoolId: string,
+  ): Promise<Omit<OtpVerifyResult, "isAdmin">>;
 }
 
 export class CognitoOtpProvider implements OtpProvider {
@@ -75,12 +82,25 @@ export class CognitoOtpProvider implements OtpProvider {
     }));
   }
 
-  async verify(email: string, code: string, session: string, clientId: string): Promise<Omit<OtpVerifyResult, "isAdmin">> {
+  async verify(
+    email: string,
+    code: string,
+    session: string,
+    clientId: string,
+    userPoolId: string,
+  ): Promise<Omit<OtpVerifyResult, "isAdmin">> {
+    const pendingUser = await this.client.send(new AdminGetUserCommand({
+      UserPoolId: userPoolId,
+      Username: email,
+    }));
+    const challengeUsername = pendingUser.Username;
+    if (!challengeUsername) throw new Error("Cognito user did not return a username");
+
     const result: RespondToAuthChallengeCommandOutput = await this.client.send(new RespondToAuthChallengeCommand({
       ClientId: clientId,
       ChallengeName: "EMAIL_OTP",
       Session: session,
-      ChallengeResponses: { USERNAME: email, EMAIL_OTP_CODE: code },
+      ChallengeResponses: { USERNAME: challengeUsername, EMAIL_OTP_CODE: code },
     }));
     const accessToken = result.AuthenticationResult?.AccessToken;
     const idToken = result.AuthenticationResult?.IdToken;
@@ -118,7 +138,13 @@ export function createAuthOtpHandler(
         const code = stringField(body, "code", 12);
         if (!/^\d{6,8}$/.test(code)) throw new HttpError(400, "인증번호 형식이 올바르지 않습니다.");
         const challengeId = stringField(body, "challengeId", 8192);
-        const result = await provider.verify(email, code, challengeId, clientId);
+        const result = await provider.verify(
+          email,
+          code,
+          challengeId,
+          clientId,
+          required(env, "USER_POOL_ID"),
+        );
         return json(200, { ...result, isAdmin });
       }
       throw new HttpError(404, "인증 경로를 찾을 수 없습니다.");
