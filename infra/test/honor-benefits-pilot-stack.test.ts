@@ -287,6 +287,17 @@ describe("HonorBenefitsPilotStack", () => {
       }
     });
 
+    const transactionPolicy = iamPolicies.find((policy) =>
+      JSON.stringify(policy).includes("dynamodb:TransactWriteItems")
+    );
+    expect(transactionPolicy).toBeDefined();
+    expect(JSON.stringify(transactionPolicy)).toContain("AdminReviewsServiceRole");
+    const transactionStatement = transactionPolicy?.Properties.PolicyDocument.Statement
+      .find(({ Action }) => Action === "dynamodb:TransactWriteItems"
+        || (Array.isArray(Action) && Action.includes("dynamodb:TransactWriteItems")));
+    expect(transactionStatement?.Resource).not.toBe("*");
+    expect(JSON.stringify(transactionStatement?.Resource)).toContain("PilotTable");
+
     template.resourceCountIs("AWS::Events::Rule", 5);
     template.resourceCountIs("AWS::CloudWatch::Alarm", 10);
     template.resourceCountIs("AWS::Logs::LogGroup", 10);
