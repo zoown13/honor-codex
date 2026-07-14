@@ -151,7 +151,7 @@ export class HonorBenefitsPilotStack extends Stack {
     });
     const mmaNoticesUrl = new CfnParameter(this, "MmaNoticesUrl", {
       type: "String",
-      default: "https://www.mma.go.kr/hall/board/boardList.do?mc=mma0003487&gesipan_id=517",
+      default: "https://www.mma.go.kr/hall/board/boardList.do?mc=mma0003395&gesipan_id=217",
       description: "MMA honorable-family benefit notice board. The shared live-ingestion switch remains off by default."
     });
     const lawApiBaseUrl = new CfnParameter(this, "LawApiBaseUrl", {

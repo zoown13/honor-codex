@@ -47,6 +47,17 @@ describe("safe source parsing", () => {
       { 조문내용: "제5조 시장은 병역명문가에게 이용료를 감면할 수 있다." },
     ] });
     expect(parseMatchingArticles(detail)).toEqual(["제5조 시장은 병역명문가에게 이용료를 감면할 수 있다."]);
+
+    const actualFieldNames = JSON.stringify({
+      조문: [{ 조내용: "제7조 병역명문가의 시설 이용료를 감면한다." }],
+      부칙: { 부칙내용: "이 조례는 병역명문가 지원에 관한 경과조치를 둔다." },
+      제개정이유: { 제개정이유내용: "병역명문가 예우 대상을 명확히 하려는 것임." },
+    });
+    expect(parseMatchingArticles(actualFieldNames)).toEqual([
+      "제7조 병역명문가의 시설 이용료를 감면한다.",
+      "이 조례는 병역명문가 지원에 관한 경과조치를 둔다.",
+      "병역명문가 예우 대상을 명확히 하려는 것임.",
+    ]);
   });
 
   it("injects fetch into the ordinance client", async () => {

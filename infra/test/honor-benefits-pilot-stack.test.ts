@@ -309,6 +309,9 @@ describe("HonorBenefitsPilotStack", () => {
         description: "Weekly ordinance ingest on Monday at 03:30 KST (Sunday 18:30 UTC)."
       }
     ];
+    expect(synthesized.Parameters.MmaNoticesUrl).toEqual(expect.objectContaining({
+      Default: "https://www.mma.go.kr/hall/board/boardList.do?mc=mma0003395&gesipan_id=217"
+    }));
     const rules = Object.values(synthesized.Resources)
       .filter((resource) => resource.Type === "AWS::Events::Rule");
     for (const gate of scheduleGates) {

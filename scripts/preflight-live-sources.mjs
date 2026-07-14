@@ -9,7 +9,7 @@ import {
 } from "../packages/core/src/index.ts";
 
 const FACILITIES_URL = "https://open.mma.go.kr/caisGGGS/bymmgListAjaxJsonCall.json";
-const NOTICES_URL = "https://www.mma.go.kr/hall/board/boardList.do?mc=mma0003487&gesipan_id=517";
+const NOTICES_URL = "https://www.mma.go.kr/hall/board/boardList.do?mc=mma0003395&gesipan_id=217";
 const LAW_URL = "https://www.law.go.kr/DRF";
 const PILOT_ORIGIN = "https://main.d23uh0qxg7a3z7.amplifyapp.com";
 const CALLBACK = "honorPilot";
@@ -61,8 +61,8 @@ try {
       scopeCount += records.length;
       for (const record of records) {
         recordsById.set(record.id, record);
-        if (recordsById.size > 1_000) {
-          throw new Error("law.go.kr preflight exceeded the 1,000 unique record safety limit");
+        if (recordsById.size > 2_000) {
+          throw new Error("law.go.kr preflight exceeded the 2,000 unique record safety limit");
         }
       }
       if (records.length < 100) break;

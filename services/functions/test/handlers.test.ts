@@ -186,7 +186,7 @@ describe("ingestion and notification safety", () => {
     expect(getMatchingArticles).not.toHaveBeenCalled();
   });
 
-  it("rejects more than 1,000 unique ordinances before detail enrichment", async () => {
+  it("rejects more than 2,000 unique ordinances before detail enrichment", async () => {
     const getMatchingArticles = vi.fn(async () => [] as string[]);
     const searchOrdinances = vi.fn(async (_query?: string, page = 1) =>
       Array.from({ length: 100 }, (_, index) => ({
@@ -205,9 +205,9 @@ describe("ingestion and notification safety", () => {
     });
 
     await expect(handler(scheduleEvent())).rejects.toThrow(
-      "law.go.kr search exceeded the 1,000 unique record safety limit"
+      "law.go.kr search exceeded the 2,000 unique record safety limit"
     );
-    expect(searchOrdinances).toHaveBeenCalledTimes(11);
+    expect(searchOrdinances).toHaveBeenCalledTimes(21);
     expect(getMatchingArticles).not.toHaveBeenCalled();
   });
 

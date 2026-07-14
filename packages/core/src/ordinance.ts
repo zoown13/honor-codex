@@ -56,7 +56,7 @@ export function parseMatchingArticles(input: string): string[] {
   const text = input.replace(/^\uFEFF/, "").trim();
   const values: string[] = [];
   if (text.startsWith("<")) {
-    for (const match of text.matchAll(/<(?:조문내용|항내용|호내용|articleContent)\b[^>]*>([\s\S]*?)<\/[^>]+>/gi)) {
+    for (const match of text.matchAll(/<(?:조문내용|조내용|항내용|호내용|부칙내용|제개정이유내용|articleContent)\b[^>]*>([\s\S]*?)<\/[^>]+>/gi)) {
       values.push(stripMarkup(match[1] ?? ""));
     }
   } else {
@@ -151,7 +151,7 @@ function collectArticleValues(value: unknown, output: string[]): void {
   if (Array.isArray(value)) { value.forEach((item) => collectArticleValues(item, output)); return; }
   if (!isRecord(value)) return;
   for (const [key, child] of Object.entries(value)) {
-    if (typeof child === "string" && /조문내용|항내용|호내용|articleContent/i.test(key)) output.push(stripMarkup(child));
+    if (typeof child === "string" && /조문내용|조내용|항내용|호내용|부칙내용|제개정이유내용|articleContent/i.test(key)) output.push(stripMarkup(child));
     else collectArticleValues(child, output);
   }
 }

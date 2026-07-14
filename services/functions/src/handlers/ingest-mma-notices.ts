@@ -4,7 +4,7 @@ import type { AppRepository, Clock, DatasetStorage } from "../shared/contracts.j
 import { fetchText, persistIngestion } from "../shared/ingestion.js";
 import { datasetStorage, liveMmaEnabled, nonEmpty, repository, systemClock } from "../shared/runtime.js";
 
-const DEFAULT_URL = "https://www.mma.go.kr/hall/board/boardList.do?mc=mma0003487&gesipan_id=517";
+const DEFAULT_URL = "https://www.mma.go.kr/hall/board/boardList.do?mc=mma0003395&gesipan_id=217";
 
 export interface MmaNoticeIngestDeps {
   repository: AppRepository;

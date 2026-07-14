@@ -5,8 +5,9 @@ import type { AppRepository, Clock, DatasetStorage } from "../shared/contracts.j
 import { persistIngestion } from "../shared/ingestion.js";
 import { datasetStorage, nonEmpty, repository, systemClock } from "../shared/runtime.js";
 
-const MAX_UNIQUE_ORDINANCES = 1_000;
-const EXECUTION_BUDGET_MS = 8 * 60 * 1_000;
+const MAX_UNIQUE_ORDINANCES = 2_000;
+const DETAIL_CONCURRENCY = 5;
+const EXECUTION_BUDGET_MS = 7 * 60 * 1_000;
 
 export interface OrdinanceClient {
   searchOrdinances(query?: string, page?: number, display?: number, search?: 1 | 2): Promise<OrdinanceRecord[]>;
@@ -33,7 +34,7 @@ export function createOrdinanceIngestHandler(deps: OrdinanceIngestDeps) {
         for (const record of pageRecords) {
           recordsById.set(record.id, record);
           if (recordsById.size > MAX_UNIQUE_ORDINANCES) {
-            throw new Error("law.go.kr search exceeded the 1,000 unique record safety limit");
+            throw new Error("law.go.kr search exceeded the 2,000 unique record safety limit");
           }
         }
         if (pageRecords.length < 100) break;
@@ -43,17 +44,27 @@ export function createOrdinanceIngestHandler(deps: OrdinanceIngestDeps) {
 
     if (recordsById.size === 0) throw new Error("law.go.kr search returned no ordinance records");
 
-    const enriched: OrdinanceRecord[] = [];
-    for (const record of recordsById.values()) {
-      if (monotonicNow() >= deadline) {
-        throw new Error("law.go.kr ingestion exceeded its execution safety budget");
+    const records = [...recordsById.values()];
+    const enriched = new Array<OrdinanceRecord>(records.length);
+    let nextIndex = 0;
+    const workers = Array.from({ length: Math.min(DETAIL_CONCURRENCY, records.length) }, async () => {
+      while (true) {
+        const index = nextIndex;
+        nextIndex += 1;
+        if (index >= records.length) return;
+        if (monotonicNow() >= deadline) {
+          throw new Error("law.go.kr ingestion exceeded its execution safety budget");
+        }
+        const record = records[index];
+        if (!record) return;
+        const matchingArticles = await deps.client.getMatchingArticles(record.id);
+        if (monotonicNow() >= deadline) {
+          throw new Error("law.go.kr ingestion exceeded its execution safety budget");
+        }
+        enriched[index] = { ...record, matchingArticles };
       }
-      const matchingArticles = await deps.client.getMatchingArticles(record.id);
-      if (monotonicNow() >= deadline) {
-        throw new Error("law.go.kr ingestion exceeded its execution safety budget");
-      }
-      enriched.push({ ...record, matchingArticles });
-    }
+    });
+    await Promise.all(workers);
     const benefits = enriched.map((record) => normalizeOrdinance(record, now));
     return persistIngestion(deps.repository, deps.storage, {
       sourceName: "law-ordinances",
