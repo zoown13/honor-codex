@@ -51,6 +51,7 @@ export interface PublicationOperation {
   createdAt: string;
   updatedAt: string;
   manifest?: DatasetManifest;
+  manifestRollbackToken?: string;
   deploymentJobId?: string;
   deployedAt?: string;
   completedAt?: string;
@@ -105,7 +106,12 @@ export interface AppRepository {
   approveBulkReviewChunk(operationId: string, at: string, maxChanges: number): Promise<BulkReviewChunkResult>;
   getPublicationOperation(): Promise<PublicationOperation | undefined>;
   beginPublication(value: PublicationOperation): Promise<BeginPublicationResult>;
-  stagePublication(operationId: string, manifest: DatasetManifest, at: string): Promise<PublicationOperation>;
+  stagePublication(
+    operationId: string,
+    manifest: DatasetManifest,
+    manifestRollbackToken: string,
+    at: string,
+  ): Promise<PublicationOperation>;
   recordPublicationJob(operationId: string, jobId: string, at: string): Promise<PublicationOperation>;
   markPublicationDeployed(operationId: string, jobId: string, at: string): Promise<PublicationOperation>;
   completePublication(operationId: string, at: string): Promise<PublicationOperation>;
@@ -117,7 +123,7 @@ export interface AppRepository {
 
 export interface DatasetPublication {
   manifest: DatasetManifest;
-  rollback(): Promise<void>;
+  rollbackToken: string;
 }
 
 export interface DatasetStorage {
@@ -125,6 +131,7 @@ export interface DatasetStorage {
   saveSnapshot(source: string, retrievedAt: string, body: string): Promise<string>;
   saveCandidate(source: string, retrievedAt: string, benefits: readonly Benefit[]): Promise<string>;
   publish(benefits: readonly Benefit[], generatedAt: string): Promise<DatasetPublication>;
+  rollback(rollbackToken: string): Promise<void>;
 }
 
 export interface DeploymentTrigger {
