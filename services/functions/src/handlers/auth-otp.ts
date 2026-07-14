@@ -33,11 +33,11 @@ export class CognitoOtpProvider implements OtpProvider {
   constructor(private readonly client = new CognitoIdentityProviderClient({})) {}
 
   async start(email: string, clientId: string, userPoolId: string, isAdmin: boolean): Promise<OtpStartResult> {
-    let result: InitiateAuthCommandOutput | undefined;
+    // PreventUserExistenceErrors can return a simulated challenge for a missing user,
+    // so an InitiateAuth-first flow cannot reliably decide when to create the account.
+    // The allowlist has already been checked by the handler: create idempotently, then
+    // assign the owner group and start the real email OTP challenge.
     try {
-      result = await this.#initiate(email, clientId);
-    } catch (error) {
-      if (errorName(error) !== "UserNotFoundException") throw error;
       await this.client.send(new AdminCreateUserCommand({
         UserPoolId: userPoolId,
         Username: email,
@@ -47,6 +47,8 @@ export class CognitoOtpProvider implements OtpProvider {
           { Name: "email_verified", Value: "true" },
         ],
       }));
+    } catch (error) {
+      if (errorName(error) !== "UsernameExistsException") throw error;
     }
 
     if (isAdmin) {
@@ -56,7 +58,7 @@ export class CognitoOtpProvider implements OtpProvider {
         GroupName: "ADMIN",
       }));
     }
-    result ??= await this.#initiate(email, clientId);
+    const result = await this.#initiate(email, clientId);
 
     if (result.ChallengeName !== "EMAIL_OTP" || !result.Session) {
       throw new Error(`Unexpected Cognito challenge: ${result.ChallengeName ?? "none"}`);
