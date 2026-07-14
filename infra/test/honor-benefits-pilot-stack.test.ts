@@ -223,6 +223,7 @@ describe("HonorBenefitsPilotStack", () => {
       Properties: {
         FunctionName: string;
         Environment: { Variables: Record<string, unknown> };
+        Timeout: number;
       };
     }>;
     const environment = (functionName: string): Record<string, unknown> => {
@@ -251,7 +252,11 @@ describe("HonorBenefitsPilotStack", () => {
       "ADMIN_EMAILS", "AMPLIFY_APP_ID", "AMPLIFY_BRANCH", "DATA_BUCKET", "DATA_PREFIX",
       "NOTIFICATION_FUNCTION_NAME", "PUBLISH_ENABLED", "RAW_PREFIX", "TABLE_NAME"
     ]);
-    expect(environment("honor-pilot-publish").PUBLISH_ENABLED).toBe("false");
+    expect(environment("honor-pilot-publish").PUBLISH_ENABLED).toEqual({ Ref: "PublishEnabled" });
+    const publishLambda = lambdaResources.find(
+      ({ Properties }) => Properties.FunctionName === "honor-pilot-publish"
+    );
+    expect(publishLambda?.Properties.Timeout).toBe(900);
     expect(keys("honor-pilot-weekly-notifications")).toEqual([
       "PILOT_SLUG", "PUBLIC_APP_URL", "SES_FROM_EMAIL", "TABLE_NAME",
       "VAPID_PRIVATE_KEY", "VAPID_PUBLIC_KEY", "VAPID_SUBJECT"
@@ -309,6 +314,21 @@ describe("HonorBenefitsPilotStack", () => {
     expect(adminGetUserStatement?.Resource).not.toBe("*");
     expect(JSON.stringify(adminGetUserStatement?.Resource)).toContain("UserPool");
 
+    const amplifyDeploymentPolicy = iamPolicies.find((policy) =>
+      JSON.stringify(policy).includes("amplify:GetJob")
+    );
+    expect(amplifyDeploymentPolicy).toBeDefined();
+    expect(JSON.stringify(amplifyDeploymentPolicy)).toContain("PublishServiceRole");
+    const amplifyDeploymentStatement = amplifyDeploymentPolicy?.Properties.PolicyDocument.Statement
+      .find(({ Action }) => Array.isArray(Action) && Action.includes("amplify:GetJob"));
+    expect(amplifyDeploymentStatement?.Action).toEqual(expect.arrayContaining([
+      "amplify:StartJob",
+      "amplify:GetJob",
+      "amplify:StopJob",
+    ]));
+    expect(amplifyDeploymentStatement?.Resource).not.toBe("*");
+    expect(JSON.stringify(amplifyDeploymentStatement?.Resource)).toContain("AmplifyApp");
+
     template.resourceCountIs("AWS::Events::Rule", 5);
     template.resourceCountIs("AWS::CloudWatch::Alarm", 10);
     template.resourceCountIs("AWS::Logs::LogGroup", 10);
@@ -343,6 +363,12 @@ describe("HonorBenefitsPilotStack", () => {
         description: "Weekly ordinance ingest on Monday at 03:30 KST (Sunday 18:30 UTC)."
       }
     ];
+    expect(synthesized.Parameters.PublishEnabled).toEqual({
+      Type: "String",
+      Default: "false",
+      AllowedValues: ["true", "false"],
+      Description: expect.stringContaining("One-shot publish guard")
+    });
     expect(synthesized.Parameters.MmaNoticesUrl).toEqual(expect.objectContaining({
       Default: "https://www.mma.go.kr/hall/board/boardList.do?mc=mma0003395&gesipan_id=217"
     }));
