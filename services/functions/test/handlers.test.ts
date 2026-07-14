@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { normalizeMmaFacility } from "@honor/core";
-import type { OrdinanceRecord, OrdinanceSearchPage } from "@honor/core";
+import type { BenefitChange, OrdinanceRecord, OrdinanceSearchPage } from "@honor/core";
 import { createAdminReviewsHandler } from "../src/handlers/admin-reviews.js";
 import { createAuthOtpHandler } from "../src/handlers/auth-otp.js";
 import { createMmaFacilityIngestHandler } from "../src/handlers/ingest-mma-facilities.js";
@@ -25,6 +25,26 @@ const benefit = normalizeMmaFacility({
   wido_vl: "37.818336",
   gyeongdo_vl: "127.711765",
 }, "2026-07-10T00:00:00.000Z");
+
+const baselineDetectedAt = "2026-07-11T00:00:00.000Z";
+
+function baselineFacilityChange(
+  index: number,
+  overrides: Partial<BenefitChange> = {},
+): BenefitChange {
+  const after = {
+    ...benefit,
+    id: `fac:${index}`,
+    title: `기준선 시설 ${index}`,
+    provider: `기준선 시설 ${index}`,
+    source: { ...benefit.source, id: String(index) },
+  };
+  return {
+    id: `chg:baseline-${index}`, benefitId: after.id, action: "ADD", risk: "HIGH", status: "PENDING",
+    changedFields: ["created"], after, detectedAt: baselineDetectedAt,
+    ...overrides,
+  };
+}
 
 function ordinanceRecord(id: string, overrides: Partial<OrdinanceRecord> = {}): OrdinanceRecord {
   return {
@@ -143,6 +163,225 @@ describe("authenticated APIs", () => {
   });
 });
 
+  it("summarizes strict source batches and pages previews at no more than 25 items", async () => {
+    const repo = new FakeRepository();
+    repo.changes.push(...Array.from({ length: 30 }, (_, index) => baselineFacilityChange(index)));
+    const handler = createAdminReviewsHandler({ repository: repo, clock: fixedClock }, { ADMIN_EMAILS: "pilot@example.com" });
+
+    const summaryResult = await handler(httpEvent("/v1/admin/review-batches", "GET"));
+    expect(summaryResult.statusCode).toBe(200);
+    const summary = JSON.parse(summaryResult.body ?? "{}") as {
+      groups: Array<{
+        batchId: string; source: string; count: number; fingerprint: string; eligible: boolean;
+        confirmationPhrase: string; samples: BenefitChange[];
+        actionCounts: Record<string, number>; riskCounts: Record<string, number>;
+      }>;
+      unclassifiedCount: number;
+    };
+    expect(summary.unclassifiedCount).toBe(0);
+    expect(summary.groups).toHaveLength(1);
+    expect(summary.groups[0]).toMatchObject({
+      source: "MMA_FACILITIES",
+      count: 30,
+      eligible: true,
+      confirmationPhrase: "APPROVE MMA_FACILITIES 30",
+      actionCounts: { ADD: 30, UPDATE: 0, DELETE: 0 },
+      riskCounts: { LOW: 0, HIGH: 30 },
+    });
+    expect(summary.groups[0]?.batchId).toMatch(/^[0-9a-f]{64}$/);
+    expect(summary.groups[0]?.batchId).toBe(summary.groups[0]?.fingerprint);
+    expect(summary.groups[0]?.samples).toHaveLength(5);
+
+    const batchId = summary.groups[0]?.batchId ?? "";
+    const firstPage = await handler(httpEvent(`/v1/admin/review-batches/${batchId}`, "GET", undefined, {
+      pathParameters: { batchId }, query: { limit: "25" },
+    }));
+    const firstPageBody = JSON.parse(firstPage.body ?? "{}") as {
+      items: BenefitChange[]; total: number; nextCursor?: string;
+    };
+    expect(firstPage.statusCode).toBe(200);
+    expect(firstPageBody.items).toHaveLength(25);
+    expect(firstPageBody.total).toBe(30);
+    expect(firstPageBody.nextCursor).toBeTruthy();
+
+    const secondPage = await handler(httpEvent(`/v1/admin/review-batches/${batchId}`, "GET", undefined, {
+      pathParameters: { batchId }, query: { limit: "25", cursor: firstPageBody.nextCursor ?? "" },
+    }));
+    expect((JSON.parse(secondPage.body ?? "{}") as { items: BenefitChange[] }).items).toHaveLength(5);
+    const oversizedPage = await handler(httpEvent(`/v1/admin/review-batches/${batchId}`, "GET", undefined, {
+      pathParameters: { batchId }, query: { limit: "26" },
+    }));
+    expect(oversizedPage.statusCode).toBe(400);
+  });
+
+  it("approves a baseline in atomic resumable chunks and records server-owned audit fields", async () => {
+    const repo = new FakeRepository();
+    repo.changes.push(...Array.from({ length: 105 }, (_, index) => baselineFacilityChange(index)));
+    const handler = createAdminReviewsHandler({ repository: repo, clock: fixedClock }, { ADMIN_EMAILS: "pilot@example.com" });
+    const summaryResult = await handler(httpEvent("/v1/admin/review-batches", "GET"));
+    const group = (JSON.parse(summaryResult.body ?? "{}") as {
+      groups: Array<{ batchId: string; source: string; detectedAt: string; count: number; fingerprint: string; confirmationPhrase: string }>;
+    }).groups[0];
+    expect(group).toBeDefined();
+    const operationId = "11111111-1111-4111-8111-111111111111";
+    const request = {
+      source: group?.source,
+      detectedAt: group?.detectedAt,
+      expectedCount: group?.count,
+      fingerprint: group?.fingerprint,
+      confirmation: group?.confirmationPhrase,
+      operationId,
+      reason: "CLIENT_MUST_NOT_CONTROL_THIS_FIELD",
+    };
+    const path = `/v1/admin/review-batches/${group?.batchId}/approve`;
+    const options = { pathParameters: { batchId: group?.batchId ?? "" } };
+
+    const first = await handler(httpEvent(path, "POST", request, options));
+    expect(JSON.parse(first.body ?? "{}")).toMatchObject({
+      batchId: group?.batchId, operationId, expectedCount: 105,
+      approvedCount: 99, processedCount: 99, remainingCount: 6, complete: false,
+    });
+    expect(repo.changes.filter((change) => change.status === "APPROVED")).toHaveLength(99);
+    expect(repo.bulkReviewOperations.get(operationId)).toMatchObject({
+      reason: "INITIAL_BASELINE_BULK_APPROVAL", approvedCount: 99, status: "IN_PROGRESS",
+    });
+    expect(repo.changes[0]).toMatchObject({
+      reviewedBy: "pilot@example.com",
+      reviewedAt: "2026-07-12T00:00:00.000Z",
+      reviewOperationId: operationId,
+      reviewReason: "INITIAL_BASELINE_BULK_APPROVAL",
+      source: "MMA_FACILITIES",
+    });
+
+    const second = await handler(httpEvent(path, "POST", request, options));
+    expect(JSON.parse(second.body ?? "{}")).toMatchObject({
+      approvedCount: 105, processedCount: 6, remainingCount: 0, complete: true,
+    });
+    expect(repo.changes.every((change) => change.status === "APPROVED" && change.publishedAt === undefined)).toBe(true);
+
+    const retry = await handler(httpEvent(path, "POST", request, options));
+    expect(JSON.parse(retry.body ?? "{}")).toMatchObject({
+      approvedCount: 105, processedCount: 0, remainingCount: 0, complete: true,
+    });
+    expect(repo.bulkReviewOperations.size).toBe(1);
+  });
+
+  it("rejects stale counts, incorrect confirmation, and non-admin callers before creating an operation", async () => {
+    const repo = new FakeRepository();
+    repo.changes.push(baselineFacilityChange(1));
+    const handler = createAdminReviewsHandler({ repository: repo, clock: fixedClock }, { ADMIN_EMAILS: "pilot@example.com" });
+    const summary = JSON.parse((await handler(httpEvent("/v1/admin/review-batches", "GET"))).body ?? "{}") as {
+      groups: Array<{ batchId: string; source: string; detectedAt: string; count: number; fingerprint: string; confirmationPhrase: string }>;
+    };
+    const group = summary.groups[0];
+    const path = `/v1/admin/review-batches/${group?.batchId}/approve`;
+    const options = { pathParameters: { batchId: group?.batchId ?? "" } };
+    const base = {
+      source: group?.source, detectedAt: group?.detectedAt, expectedCount: 1,
+      fingerprint: group?.fingerprint, operationId: "22222222-2222-4222-8222-222222222222",
+    };
+
+    expect((await handler(httpEvent(path, "POST", { ...base, confirmation: "틀린 문구" }, options))).statusCode).toBe(400);
+    expect((await handler(httpEvent(path, "POST", {
+      ...base, expectedCount: 2, confirmation: "APPROVE MMA_FACILITIES 2",
+    }, options))).statusCode).toBe(409);
+    expect(repo.bulkReviewOperations.size).toBe(0);
+    expect(repo.changes[0]?.status).toBe("PENDING");
+
+    const deniedHandler = createAdminReviewsHandler(
+      { repository: repo, clock: fixedClock },
+      { ADMIN_EMAILS: "someone-else@example.com" },
+    );
+    expect((await deniedHandler(httpEvent("/v1/admin/review-batches", "GET"))).statusCode).toBe(403);
+  });
+
+  it("makes a source ineligible forever when another detectedAt exists", async () => {
+    const repo = new FakeRepository();
+    repo.changes.push(
+      baselineFacilityChange(1),
+      baselineFacilityChange(2, { status: "APPROVED", detectedAt: "2026-07-10T00:00:00.000Z" }),
+    );
+    const handler = createAdminReviewsHandler({ repository: repo, clock: fixedClock }, { ADMIN_EMAILS: "pilot@example.com" });
+    const summary = JSON.parse((await handler(httpEvent("/v1/admin/review-batches", "GET"))).body ?? "{}") as {
+      groups: Array<{
+        batchId: string; source: string; detectedAt: string; count: number; fingerprint: string;
+        confirmationPhrase: string; eligible: boolean; ineligibleReason?: string;
+      }>;
+    };
+    const group = summary.groups[0];
+    expect(group).toMatchObject({ eligible: false, count: 1 });
+    expect(group?.ineligibleReason).toContain("다른 수집 시각");
+    const response = await handler(httpEvent(
+      `/v1/admin/review-batches/${group?.batchId}/approve`,
+      "POST",
+      {
+        source: group?.source, detectedAt: group?.detectedAt, expectedCount: group?.count,
+        fingerprint: group?.fingerprint, confirmation: group?.confirmationPhrase,
+        operationId: "33333333-3333-4333-8333-333333333333",
+      },
+      { pathParameters: { batchId: group?.batchId ?? "" } },
+    ));
+    expect(response.statusCode).toBe(409);
+    expect(repo.bulkReviewOperations.size).toBe(0);
+    expect(repo.changes[0]?.status).toBe("PENDING");
+  });
+
+  it("does not classify a legacy change unless prefix, type, and official source all agree", async () => {
+    const repo = new FakeRepository();
+    const unclassified = baselineFacilityChange(1);
+    if (unclassified.after) unclassified.after = {
+      ...unclassified.after,
+      source: { ...unclassified.after.source, system: "MANUAL" },
+    };
+    repo.changes.push(unclassified);
+    const handler = createAdminReviewsHandler({ repository: repo, clock: fixedClock }, { ADMIN_EMAILS: "pilot@example.com" });
+    const body = JSON.parse((await handler(httpEvent("/v1/admin/review-batches", "GET"))).body ?? "{}") as {
+      groups: unknown[]; unclassifiedCount: number;
+    };
+    expect(body.groups).toHaveLength(0);
+    expect(body.unclassifiedCount).toBe(1);
+  });
+
+
+  it("rejects a same-timestamp group when a non-baseline UPDATE is mixed in", async () => {
+    const repo = new FakeRepository();
+    repo.changes.push(
+      baselineFacilityChange(1),
+      baselineFacilityChange(2, {
+        action: "UPDATE",
+        before: { ...benefit, id: "fac:2", source: { ...benefit.source, id: "2" } },
+        changedFields: ["summary"],
+      }),
+    );
+    const handler = createAdminReviewsHandler({ repository: repo, clock: fixedClock }, { ADMIN_EMAILS: "pilot@example.com" });
+    const group = (JSON.parse(
+      (await handler(httpEvent("/v1/admin/review-batches", "GET"))).body ?? "{}",
+    ) as {
+      groups: Array<{
+        batchId: string; source: string; detectedAt: string; count: number; fingerprint: string;
+        confirmationPhrase: string; eligible: boolean; actionCounts: Record<string, number>;
+      }>;
+    }).groups[0];
+    expect(group).toMatchObject({
+      eligible: false,
+      count: 2,
+      actionCounts: { ADD: 1, UPDATE: 1, DELETE: 0 },
+    });
+
+    const response = await handler(httpEvent(
+      `/v1/admin/review-batches/${group?.batchId}/approve`,
+      "POST",
+      {
+        source: group?.source, detectedAt: group?.detectedAt, expectedCount: group?.count,
+        fingerprint: group?.fingerprint, confirmation: group?.confirmationPhrase,
+        operationId: "44444444-4444-4444-8444-444444444444",
+      },
+      { pathParameters: { batchId: group?.batchId ?? "" } },
+    ));
+    expect(response.statusCode).toBe(409);
+    expect(repo.bulkReviewOperations.size).toBe(0);
+    expect(repo.changes.every((change) => change.status === "PENDING")).toBe(true);
+  });
 describe("ingestion and notification safety", () => {
   it("does not fetch MMA when the explicit live gate is false", async () => {
     const fetcher = vi.fn<typeof fetch>();

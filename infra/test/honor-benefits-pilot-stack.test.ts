@@ -141,13 +141,25 @@ describe("HonorBenefitsPilotStack", () => {
       AllowedOAuthFlows: Match.absent()
     });
     template.resourceCountIs("AWS::ApiGatewayV2::Authorizer", 1);
-    template.resourceCountIs("AWS::ApiGatewayV2::Route", 12);
+    template.resourceCountIs("AWS::ApiGatewayV2::Route", 15);
     template.hasResourceProperties("AWS::ApiGatewayV2::Route", {
       RouteKey: "POST /v1/auth/otp/start",
       AuthorizationType: "NONE"
     });
     template.hasResourceProperties("AWS::ApiGatewayV2::Route", {
       RouteKey: "DELETE /v1/me/subscriptions/{subscriptionId}",
+      AuthorizationType: "JWT"
+    });
+    template.hasResourceProperties("AWS::ApiGatewayV2::Route", {
+      RouteKey: "GET /v1/admin/review-batches",
+      AuthorizationType: "JWT"
+    });
+    template.hasResourceProperties("AWS::ApiGatewayV2::Route", {
+      RouteKey: "GET /v1/admin/review-batches/{batchId}",
+      AuthorizationType: "JWT"
+    });
+    template.hasResourceProperties("AWS::ApiGatewayV2::Route", {
+      RouteKey: "POST /v1/admin/review-batches/{batchId}/approve",
       AuthorizationType: "JWT"
     });
     template.hasResourceProperties("AWS::ApiGatewayV2::Stage", {

@@ -3,7 +3,7 @@
 import { KOREA_REGION_OPTIONS, type Benefit, type BenefitKind, type BenefitType, type SearchRequest, type SearchResult } from "@honor/core";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { benefits as fallbackBenefits, datasetManifest as fallbackManifest } from "../data/sample-benefits";
-import type { AuthSession } from "../lib/api";
+import { getSession, type AuthSession } from "../lib/api";
 import { KIND_LABEL, TYPE_LABEL, formatDate } from "../lib/format";
 import { useBenefitSearch } from "../lib/use-benefit-search";
 import { useDataset } from "../lib/use-dataset";
@@ -71,6 +71,7 @@ export function PilotApp({ slug }: PilotAppProps) {
     queueMicrotask(() => {
       if (!active) return;
       setOnline(navigator.onLine);
+      setSession(getSession());
       const benefitId = new URLSearchParams(window.location.search).get("benefit");
       if (benefitId) setSelectedBenefit(benefitById.get(benefitId) ?? null);
     });
@@ -302,7 +303,11 @@ export function PilotApp({ slug }: PilotAppProps) {
         ) : view === "follow" ? (
           <SubscriptionsPanel benefits={benefits} onPendingConsumed={() => setPendingFollow(undefined)} onSessionChange={handleSessionChange} {...(pendingFollow ? { pendingBenefit: pendingFollow } : {})} />
         ) : view === "admin" ? (
-          <AdminPanel session={session} onOpenLogin={() => changeView("follow")} />
+          <AdminPanel
+            session={session}
+            onOpenLogin={() => changeView("follow")}
+            onSessionExpired={() => setSession(null)}
+          />
         ) : (
           <section className="results-section" aria-labelledby="results-title">
             <div className="section-heading">

@@ -1,6 +1,7 @@
 import type {
   Benefit,
   BenefitChange,
+  BenefitChangeSource,
   DatasetManifest,
   PushSubscriptionRecord,
   Subscription,
@@ -20,6 +21,34 @@ export interface DeliveryReservation {
   error?: string;
 }
 
+export interface BulkReviewOperation {
+  id: string;
+  source: BenefitChangeSource;
+  detectedAt: string;
+  fingerprint: string;
+  expectedCount: number;
+  changeIds: string[];
+  reviewer: string;
+  reason: string;
+  status: "IN_PROGRESS" | "COMPLETED";
+  approvedCount: number;
+  createdAt: string;
+  updatedAt: string;
+  completedAt?: string;
+}
+
+export interface BulkReviewChunkResult {
+  operation: BulkReviewOperation;
+  processedCount: number;
+}
+
+export class BulkReviewConflictError extends Error {
+  constructor(message = "Bulk review operation conflicted with current change state") {
+    super(message);
+    this.name = "BulkReviewConflictError";
+  }
+}
+
 export interface AppRepository {
   listSubscriptions(userId: string): Promise<StoredSubscription[]>;
   putSubscription(value: StoredSubscription): Promise<void>;
@@ -33,6 +62,9 @@ export interface AppRepository {
   listChanges(statuses?: readonly BenefitChange["status"][]): Promise<BenefitChange[]>;
   getChange(changeId: string): Promise<BenefitChange | undefined>;
   reviewChange(changeId: string, decision: "APPROVED" | "REJECTED", reviewer: string, at: string): Promise<BenefitChange>;
+  getBulkReviewOperation(operationId: string): Promise<BulkReviewOperation | undefined>;
+  putBulkReviewOperation(value: BulkReviewOperation): Promise<BulkReviewOperation>;
+  approveBulkReviewChunk(operationId: string, at: string, maxChanges: number): Promise<BulkReviewChunkResult>;
   markChangesPublished(changeIds: readonly string[], at: string): Promise<void>;
   reserveDelivery(value: DeliveryReservation): Promise<boolean>;
   finishDelivery(userId: string, key: string, status: "SENT" | "FAILED", at: string, error?: string): Promise<void>;

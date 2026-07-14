@@ -828,6 +828,24 @@ export class HonorBenefitsPilotStack extends Stack {
       authorizer: jwtAuthorizer
     });
     httpApi.addRoutes({
+      path: "/v1/admin/review-batches",
+      methods: [apigwv2.HttpMethod.GET],
+      integration: adminIntegration,
+      authorizer: jwtAuthorizer
+    });
+    httpApi.addRoutes({
+      path: "/v1/admin/review-batches/{batchId}",
+      methods: [apigwv2.HttpMethod.GET],
+      integration: adminIntegration,
+      authorizer: jwtAuthorizer
+    });
+    httpApi.addRoutes({
+      path: "/v1/admin/review-batches/{batchId}/approve",
+      methods: [apigwv2.HttpMethod.POST],
+      integration: adminIntegration,
+      authorizer: jwtAuthorizer
+    });
+    httpApi.addRoutes({
       path: "/v1/admin/publish",
       methods: [apigwv2.HttpMethod.POST],
       integration: publishIntegration,
