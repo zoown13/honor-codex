@@ -17,7 +17,10 @@ workload. Persistent S3, DynamoDB, Cognito and SQS resources use retain policies
 
 Optional parameters keep live ingestion and source control disconnected by
 default. `MmaLiveIngestionEnabled=false` is intentional until source usage is
-approved. Set `LawApiOc` only after the OPEN API credential has been issued.
+approved. The three `*IngestionScheduleEnabled=false` parameters keep facility,
+notice, and ordinance rules independently disabled while credentials and source
+responses are verified. Set `LawApiOc`
+only after the OPEN API credential has been issued.
 Web Push is opt-in: provide VapidSubject, VapidPublicKey and VapidPrivateKey
 together. Leaving any one blank disables push while weekly SES email remains
 available.

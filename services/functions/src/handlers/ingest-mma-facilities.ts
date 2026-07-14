@@ -6,6 +6,7 @@ import { datasetStorage, liveMmaEnabled, nonEmpty, repository, systemClock } fro
 
 const DEFAULT_URL = "https://open.mma.go.kr/caisGGGS/bymmgListAjaxJsonCall.json";
 const CALLBACK = "honorPilot";
+const MIN_EXPECTED_FACILITIES = 100;
 
 export interface MmaFacilityIngestDeps {
   repository: AppRepository;
@@ -26,8 +27,12 @@ export function createMmaFacilityIngestHandler(
     const body = await fetchText(url, deps.fetcher ?? fetch);
     const payload = parseMmaFacilityPayload(body, CALLBACK);
     const benefits = normalizeMmaFacilities(payload.list, now);
+    if (benefits.length < MIN_EXPECTED_FACILITIES) {
+      throw new Error("MMA facility parsing returned fewer than 100 benefits");
+    }
     return persistIngestion(deps.repository, deps.storage, {
-      sourceName: "mma-facilities", benefitType: "FACILITY", rawBody: body, benefits, retrievedAt: now,
+      sourceName: "mma-facilities", benefitType: "FACILITY", benefitIdPrefix: "fac:",
+      rawBody: body, benefits, retrievedAt: now,
     });
   };
 }

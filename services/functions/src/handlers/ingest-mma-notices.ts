@@ -20,8 +20,10 @@ export function createMmaNoticeIngestHandler(deps: MmaNoticeIngestDeps, env: Nod
     const url = new URL(nonEmpty(env.MMA_NOTICES_URL) || DEFAULT_URL);
     const body = await fetchText(url, deps.fetcher ?? fetch, 5 * 1024 * 1024);
     const benefits = normalizeMmaNotices(parseMmaNotices(body), now);
+    if (benefits.length === 0) throw new Error("MMA notice parsing returned no benefits");
     return persistIngestion(deps.repository, deps.storage, {
-      sourceName: "mma-notices", benefitType: "NATIONAL", rawBody: body, benefits, retrievedAt: now,
+      sourceName: "mma-notices", benefitType: "NATIONAL", benefitIdPrefix: "nat:",
+      allowDeletes: false, rawBody: body, benefits, retrievedAt: now,
     });
   };
 }

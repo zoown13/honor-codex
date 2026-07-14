@@ -50,12 +50,17 @@ describe("safe source parsing", () => {
   });
 
   it("injects fetch into the ordinance client", async () => {
-    const fetchMock = vi.fn(async () => ({ ok: true, status: 200, text: async () => ordinanceJsonFixture }));
+    const fetchMock = vi.fn(async (_input: string | URL, _init?: RequestInit) => ({
+      ok: true,
+      status: 200,
+      text: async () => ordinanceJsonFixture
+    }));
     const client = new LawApiClient({ oc: "pilot@example.com", fetch: fetchMock });
     const result = await client.searchOrdinances();
     const requested = new URL(String(fetchMock.mock.calls[0]?.[0]));
     expect(requested.searchParams.get("target")).toBe("ordin");
     expect(requested.searchParams.get("query")).toBe("병역명문가");
+    expect(fetchMock.mock.calls[0]?.[1]?.signal).toBeInstanceOf(AbortSignal);
     expect(result).toHaveLength(1);
   });
 });

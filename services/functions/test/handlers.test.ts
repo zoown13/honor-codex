@@ -3,6 +3,8 @@ import { normalizeMmaFacility } from "@honor/core";
 import { createAdminReviewsHandler } from "../src/handlers/admin-reviews.js";
 import { createAuthOtpHandler } from "../src/handlers/auth-otp.js";
 import { createMmaFacilityIngestHandler } from "../src/handlers/ingest-mma-facilities.js";
+import { createMmaNoticeIngestHandler } from "../src/handlers/ingest-mma-notices.js";
+import { createOrdinanceIngestHandler } from "../src/handlers/ingest-ordinances.js";
 import { createPushSubscriptionsHandler } from "../src/handlers/push-subscriptions.js";
 import { createSubscriptionsHandler } from "../src/handlers/subscriptions.js";
 import { createWeeklyNotificationHandler } from "../src/handlers/weekly-notifications.js";
@@ -95,6 +97,118 @@ describe("ingestion and notification safety", () => {
     const result = await handler(scheduleEvent());
     expect(result).toMatchObject({ skipped: true });
     expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("rejects a partial MMA facility response before persistence", async () => {
+    const repository = new FakeRepository();
+    const storage = new FakeStorage();
+    const body = `honorPilot(${JSON.stringify({
+      success: true,
+      list: [{ mmgudgigwan_cd: "1", udae_ggm: "부분 응답 시설" }]
+    })});`;
+    const fetcher = vi.fn<typeof fetch>(async () => new Response(body));
+    const handler = createMmaFacilityIngestHandler(
+      { repository, storage, fetcher, clock: fixedClock },
+      { MMA_LIVE_INGESTION_ENABLED: "true" }
+    );
+
+    await expect(handler(scheduleEvent())).rejects.toThrow(
+      "MMA facility parsing returned fewer than 100 benefits"
+    );
+    expect(repository.changes).toHaveLength(0);
+    expect(storage.snapshots).toHaveLength(0);
+    expect(storage.candidates).toHaveLength(0);
+  });
+
+  it("rejects an MMA notice response that parses to no benefits before persistence", async () => {
+    const repository = new FakeRepository();
+    const storage = new FakeStorage();
+    const fetcher = vi.fn<typeof fetch>(
+      async () => new Response("<html><body>maintenance</body></html>")
+    );
+    const handler = createMmaNoticeIngestHandler(
+      { repository, storage, fetcher, clock: fixedClock },
+      { MMA_LIVE_INGESTION_ENABLED: "true" }
+    );
+
+    await expect(handler(scheduleEvent())).rejects.toThrow("MMA notice parsing returned no benefits");
+    expect(repository.changes).toHaveLength(0);
+    expect(storage.snapshots).toHaveLength(0);
+    expect(storage.candidates).toHaveLength(0);
+  });
+
+  it("rejects an empty ordinance search before persistence", async () => {
+    const storage = new FakeStorage();
+    const getMatchingArticles = vi.fn(async () => [] as string[]);
+    const handler = createOrdinanceIngestHandler({
+      repository: new FakeRepository(),
+      storage,
+      clock: fixedClock,
+      client: {
+        searchOrdinances: vi.fn(async () => []),
+        getMatchingArticles
+      }
+    });
+
+    await expect(handler(scheduleEvent())).rejects.toThrow(
+      "law.go.kr search returned no ordinance records"
+    );
+    expect(getMatchingArticles).not.toHaveBeenCalled();
+    expect(storage.snapshots).toHaveLength(0);
+    expect(storage.candidates).toHaveLength(0);
+  });
+
+  it("stops ordinance detail enrichment before the execution safety budget expires", async () => {
+    const getMatchingArticles = vi.fn(async () => [] as string[]);
+    const monotonicNow = vi.fn()
+      .mockReturnValueOnce(0)
+      .mockReturnValue(8 * 60 * 1_000);
+    const handler = createOrdinanceIngestHandler({
+      repository: new FakeRepository(),
+      storage: new FakeStorage(),
+      clock: fixedClock,
+      monotonicNow,
+      client: {
+        searchOrdinances: vi.fn(async () => [{
+          id: "ordinance-1",
+          title: "테스트 조례",
+          localGovernment: "테스트시",
+          url: "https://www.law.go.kr/ordinance/1",
+          matchingArticles: []
+        }]),
+        getMatchingArticles
+      }
+    });
+
+    await expect(handler(scheduleEvent())).rejects.toThrow(
+      "law.go.kr ingestion exceeded its execution safety budget"
+    );
+    expect(getMatchingArticles).not.toHaveBeenCalled();
+  });
+
+  it("rejects more than 1,000 unique ordinances before detail enrichment", async () => {
+    const getMatchingArticles = vi.fn(async () => [] as string[]);
+    const searchOrdinances = vi.fn(async (_query?: string, page = 1) =>
+      Array.from({ length: 100 }, (_, index) => ({
+        id: `ordinance-${page}-${index}`,
+        title: `테스트 조례 ${page}-${index}`,
+        localGovernment: "테스트시",
+        url: `https://www.law.go.kr/ordinance/${page}-${index}`,
+        matchingArticles: []
+      }))
+    );
+    const handler = createOrdinanceIngestHandler({
+      repository: new FakeRepository(),
+      storage: new FakeStorage(),
+      clock: fixedClock,
+      client: { searchOrdinances, getMatchingArticles }
+    });
+
+    await expect(handler(scheduleEvent())).rejects.toThrow(
+      "law.go.kr search exceeded the 1,000 unique record safety limit"
+    );
+    expect(searchOrdinances).toHaveBeenCalledTimes(11);
+    expect(getMatchingArticles).not.toHaveBeenCalled();
   });
 
   it("reserves weekly deliveries before sending and suppresses duplicate invocation", async () => {

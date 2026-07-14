@@ -112,6 +112,39 @@ export class HonorBenefitsPilotStack extends Stack {
       allowedValues: ["true", "false"],
       description: "Explicit safety switch for the undocumented MMA live JSONP endpoint."
     });
+    const facilitiesIngestionScheduleEnabled = new CfnParameter(this, "FacilitiesIngestionScheduleEnabled", {
+      type: "String",
+      default: "false",
+      allowedValues: ["true", "false"],
+      description: "Enable the facility ingestion schedule only after its live source preflight succeeds."
+    });
+    const facilitiesIngestionScheduleEnabledCondition = new CfnCondition(
+      this,
+      "FacilitiesIngestionScheduleEnabledCondition",
+      { expression: Fn.conditionEquals(facilitiesIngestionScheduleEnabled.valueAsString, "true") }
+    );
+    const noticesIngestionScheduleEnabled = new CfnParameter(this, "NoticesIngestionScheduleEnabled", {
+      type: "String",
+      default: "false",
+      allowedValues: ["true", "false"],
+      description: "Enable the notice ingestion schedule only after its live source preflight succeeds."
+    });
+    const noticesIngestionScheduleEnabledCondition = new CfnCondition(
+      this,
+      "NoticesIngestionScheduleEnabledCondition",
+      { expression: Fn.conditionEquals(noticesIngestionScheduleEnabled.valueAsString, "true") }
+    );
+    const ordinancesIngestionScheduleEnabled = new CfnParameter(this, "OrdinancesIngestionScheduleEnabled", {
+      type: "String",
+      default: "false",
+      allowedValues: ["true", "false"],
+      description: "Enable the ordinance ingestion schedule only after its live source preflight succeeds."
+    });
+    const ordinancesIngestionScheduleEnabledCondition = new CfnCondition(
+      this,
+      "OrdinancesIngestionScheduleEnabledCondition",
+      { expression: Fn.conditionEquals(ordinancesIngestionScheduleEnabled.valueAsString, "true") }
+    );
     const mmaFacilitiesUrl = new CfnParameter(this, "MmaFacilitiesUrl", {
       type: "String",
       default: "https://open.mma.go.kr/caisGGGS/bymmgListAjaxJsonCall.json"
@@ -678,21 +711,29 @@ export class HonorBenefitsPilotStack extends Stack {
         event: events.RuleTargetInput.fromObject({ source: "schedule", job })
       });
 
-    new events.Rule(this, "DailyFacilitiesRule", {
+    const ingestionScheduleState = (condition: CfnCondition): string =>
+      Fn.conditionIf(condition.logicalId, "ENABLED", "DISABLED").toString();
+    const dailyFacilitiesRule = new events.Rule(this, "DailyFacilitiesRule", {
       description: "Daily MMA facilities ingest at 03:00 KST (18:00 UTC).",
       schedule: events.Schedule.cron({ minute: "0", hour: "18" }),
       targets: [scheduleTarget(facilitiesIngest, "mma-facilities")]
     });
-    new events.Rule(this, "DailyNoticesRule", {
+    (dailyFacilitiesRule.node.defaultChild as events.CfnRule).state =
+      ingestionScheduleState(facilitiesIngestionScheduleEnabledCondition);
+    const dailyNoticesRule = new events.Rule(this, "DailyNoticesRule", {
       description: "Daily MMA notices ingest at 03:15 KST (18:15 UTC).",
       schedule: events.Schedule.cron({ minute: "15", hour: "18" }),
       targets: [scheduleTarget(noticesIngest, "mma-notices")]
     });
-    new events.Rule(this, "WeeklyOrdinancesRule", {
+    (dailyNoticesRule.node.defaultChild as events.CfnRule).state =
+      ingestionScheduleState(noticesIngestionScheduleEnabledCondition);
+    const weeklyOrdinancesRule = new events.Rule(this, "WeeklyOrdinancesRule", {
       description: "Weekly ordinance ingest on Monday at 03:30 KST (Sunday 18:30 UTC).",
       schedule: events.Schedule.cron({ minute: "30", hour: "18", weekDay: "SUN" }),
       targets: [scheduleTarget(ordinancesIngest, "ordinances")]
     });
+    (weeklyOrdinancesRule.node.defaultChild as events.CfnRule).state =
+      ingestionScheduleState(ordinancesIngestionScheduleEnabledCondition);
     new events.Rule(this, "WeeklyNotificationsRule", {
       description: "Weekly follower digest on Monday at 09:00 KST (00:00 UTC).",
       schedule: events.Schedule.cron({ minute: "0", hour: "0", weekDay: "MON" }),
@@ -880,7 +921,7 @@ export class HonorBenefitsPilotStack extends Stack {
       condition: amplifyBranchEnabledCondition
     });
     new CfnOutput(this, "PilotUrl", {
-      value: `${amplifyBranchUrl}/pilot/${pilotSlug.valueAsString}`,
+      value: `${amplifyBranchUrl}/pilot/${pilotSlug.valueAsString}/`,
       condition: amplifyBranchEnabledCondition
     });
     new CfnOutput(this, "SesConfigurationSetName", {

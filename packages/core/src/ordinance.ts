@@ -5,6 +5,8 @@ import type { Benefit, OrdinanceRecord } from "./types.ts";
 
 export type FetchLike = (input: string | URL, init?: RequestInit) => Promise<Pick<Response, "ok" | "status" | "text">>;
 
+const LAW_REQUEST_TIMEOUT_MS = 20_000;
+
 export interface LawApiClientOptions {
   oc: string;
   baseUrl?: string;
@@ -30,7 +32,7 @@ export class LawApiClient {
       page: String(page), display: String(Math.min(Math.max(display, 1), 100)),
       nw: "1", search: String(search),
     }).toString();
-    const response = await this.#fetch(url);
+    const response = await this.#fetch(url, { signal: AbortSignal.timeout(LAW_REQUEST_TIMEOUT_MS) });
     if (!response.ok) throw new Error(`law.go.kr search failed: HTTP ${response.status}`);
     return parseOrdinanceSearch(await response.text());
   }
@@ -38,7 +40,7 @@ export class LawApiClient {
   async getMatchingArticles(id: string): Promise<string[]> {
     const url = new URL(`${this.#baseUrl}/lawService.do`);
     url.search = new URLSearchParams({ OC: this.#oc, target: "ordin", type: "JSON", ID: id }).toString();
-    const response = await this.#fetch(url);
+    const response = await this.#fetch(url, { signal: AbortSignal.timeout(LAW_REQUEST_TIMEOUT_MS) });
     if (!response.ok) throw new Error(`law.go.kr detail failed: HTTP ${response.status}`);
     return parseMatchingArticles(await response.text());
   }

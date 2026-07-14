@@ -43,6 +43,19 @@ BuildSpec, CustomHeaders, 환경변수처럼 Amplify App 설정과 소스가 함
 - 모노레포 사용자 지정 헤더는 CDK `CustomHeaders`를 단일 원천으로 사용하고 `applications -> appRoot -> customHeaders` 형식을 유지합니다. `appRoot`와 `AMPLIFY_MONOREPO_APP_ROOT`는 모두 `apps/web`이어야 하며, 별도 `customHttp.yml`은 추가하지 않습니다.
 - 가드가 비활성인 동안에도 수집과 소유자 검수는 계속할 수 있으며 승인된 변경은 게시 대기 상태로 남습니다.
 
+## 최초 실데이터 수집 활성화
+
+1. `PUBLISH_ENABLED=false`를 확인하고 시설·공지·조례의 세 `*IngestionScheduleEnabled` 파라미터를 각각 `false`로 두어 수집 EventBridge 규칙을 비활성 상태로 둡니다. 주간 알림 규칙은 수집 게이트와 독립적이므로 기존 `PUBLISHED` 변경·구독·delivery가 없는지도 별도로 확인합니다.
+2. 먼저 `pnpm deploy:live -- gate-off`를 실행하고 세 수집 규칙이 `DISABLED`인지 확인합니다. 그다음 Git에서 무시되는 `.env.deploy.local`에 키를 저장하고 `pnpm preflight:live`로 제한된 읽기 요청의 상태·형식·타임아웃과 JSONP 또는 JSON 파싱을 확인합니다. 이 단계에서는 DynamoDB와 S3에 쓰지 않습니다.
+3. 로컬 typecheck·단위 테스트·CDK synth와 사전 검사가 모두 통과하면 `pnpm deploy:live -- configure`로 법제처 `OC`, Kakao 키와 병무청 실수집 스위치를 배포합니다. 세 수집 규칙이 계속 `DISABLED`인지 다시 확인하며 파라미터·로그·셸 기록에 비밀값을 출력하지 않습니다.
+4. 소스 PR을 병합해 Amplify 빌드·브라우저 스모크 테스트를 통과시킨 뒤, `gate-on facilities`, `gate-on notices`, `gate-on ordinances`를 원천별로 한 번에 하나만 실행합니다. 현재 운영자에게 Lambda 직접 호출 권한이 없으므로 각 원천의 다음 예약 실행을 한 번만 허용하고 실행 직후 같은 원천을 `gate-off <원천>`으로 끕니다.
+5. 각 실행 후 다음 원천으로 넘어가기 전에 Lambda 오류, DLQ, S3 원문 스냅샷, 정규화 건수와 DynamoDB 변경 건수를 확인합니다. 시설 결과가 100건 미만이거나, 공지·조례가 0건이거나, 조례 고유 레코드가 1,000건을 넘거나, 사전에 기록한 정상 범위를 크게 벗어나면 실패로 취급합니다.
+6. 활성 데이터가 20건 미만인 희소 기준선의 모든 변경은 배치 가드에 의해 `HIGH/PENDING`이어야 합니다. 공지 수집은 페이지 목록에서 사라진 과거 공지를 삭제하지 않는 upsert-only 방식입니다. `AUTO_APPROVED`가 하나라도 있거나 예상 밖 대량 삭제가 있으면 스케줄을 켜거나 재실행하지 말고 원인을 수정합니다.
+7. 검증 전후의 `published/manifest.json` version ID가 같고 Amplify 배포 작업, 알림 delivery 레코드, SES 발송 지표가 증가하지 않았는지 확인합니다. 하나라도 변했으면 게시·알림 부작용으로 보고 스케줄을 비활성 상태로 유지합니다.
+8. 세 원천의 첫 실행과 소유자 검수가 모두 끝난 뒤에만 원천별 `gate-on`을 다시 적용해 정기 실행을 유지합니다. `PUBLISH_ENABLED=false`는 배포 성공 게이트가 별도로 구현될 때까지 유지하므로, 이 단계는 수집 활성화이며 앱의 게시 데이터 전환은 아닙니다. 주간 알림은 구독·중복 방지·sandbox 수신자를 별도로 검증합니다.
+
+VAPID 키는 브라우저 웹 푸시 구독과 발송 서버를 식별·서명하는 공개키·개인키 쌍입니다. 데이터 수집, Kakao 지도, 법제처 API, SES 주간 이메일과는 무관하므로 웹 푸시를 시험할 때까지 비워 두어도 됩니다.
+
 ## 일상 운영
 
 - 시설·공지 수집은 매일, 조례 수집은 매주 실행됩니다.
