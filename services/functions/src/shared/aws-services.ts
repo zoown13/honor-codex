@@ -9,7 +9,6 @@ import webPush from "web-push";
 import type {
   DatasetPublication,
   DatasetStorage,
-  DeploymentOutcomeUnknownError,
   DeploymentTrigger,
   EmailMessage,
   Mailer,
@@ -17,6 +16,7 @@ import type {
   PushMessage,
   PushSender,
 } from "./contracts.js";
+import { DeploymentOutcomeUnknownError } from "./contracts.js";
 
 interface S3DatasetStorageOptions {
   bucket: string;
@@ -89,19 +89,19 @@ export class S3DatasetStorage implements DatasetStorage {
       throw new Error("Versioned dataset bucket did not return a manifest VersionId");
     }
 
-    let rolledBack = false;
     return {
       manifest: generated.manifest,
-      rollback: async () => {
-        if (rolledBack) return;
-        await this.#client.send(new DeleteObjectCommand({
-          Bucket: this.#bucket,
-          Key: manifestKey,
-          VersionId: manifestVersionId,
-        }));
-        rolledBack = true;
-      },
+      rollbackToken: manifestVersionId,
     };
+  }
+
+  async rollback(rollbackToken: string): Promise<void> {
+    if (!rollbackToken.trim()) throw new Error("Manifest rollback token is required");
+    await this.#client.send(new DeleteObjectCommand({
+      Bucket: this.#bucket,
+      Key: `${this.#prefix}/manifest.json`,
+      VersionId: rollbackToken,
+    }));
   }
 
   async #get(key: string): Promise<string> {
