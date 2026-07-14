@@ -145,6 +145,12 @@ export class HonorBenefitsPilotStack extends Stack {
       "OrdinancesIngestionScheduleEnabledCondition",
       { expression: Fn.conditionEquals(ordinancesIngestionScheduleEnabled.valueAsString, "true") }
     );
+    const publishEnabled = new CfnParameter(this, "PublishEnabled", {
+      type: "String",
+      default: "false",
+      allowedValues: ["true", "false"],
+      description: "One-shot publish guard. Enable only while invoking the success-gated publish Lambda."
+    });
     const mmaFacilitiesUrl = new CfnParameter(this, "MmaFacilitiesUrl", {
       type: "String",
       default: "https://open.mma.go.kr/caisGGGS/bymmgListAjaxJsonCall.json"
@@ -623,10 +629,10 @@ export class HonorBenefitsPilotStack extends Stack {
         AMPLIFY_APP_ID: amplifyApp.attrAppId,
         AMPLIFY_BRANCH: amplifyBranchName.valueAsString,
         ADMIN_EMAILS: adminEmails.valueAsString,
-        PUBLISH_ENABLED: "false"
+        PUBLISH_ENABLED: publishEnabled.valueAsString
       },
       memorySize: 512,
-      timeout: Duration.minutes(5)
+      timeout: Duration.minutes(15)
     });
     const weeklyNotificationsFunction = createFunction("WeeklyNotifications", {
       entry: "weekly-notifications.ts",
@@ -691,7 +697,13 @@ export class HonorBenefitsPilotStack extends Stack {
     );
     publishFunction.addToRolePolicy(
       new iam.PolicyStatement({
-        actions: ["amplify:StartJob", "amplify:CreateDeployment", "amplify:StartDeployment"],
+        actions: [
+          "amplify:StartJob",
+          "amplify:GetJob",
+          "amplify:StopJob",
+          "amplify:CreateDeployment",
+          "amplify:StartDeployment"
+        ],
         resources: [
           this.formatArn({
             service: "amplify",
