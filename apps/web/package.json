@@ -8,6 +8,7 @@
     "build": "next build",
     "postbuild": "node scripts/assert-static-output.mjs",
     "start": "npx serve out",
+    "pretest": "pnpm --filter @honor/core build",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
