@@ -1384,6 +1384,78 @@ a {
   font-size: 12px;
 }
 
+.map-info-window {
+  box-sizing: border-box;
+  display: flex;
+  width: min(242px, calc(100vw - 64px));
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px;
+  color: var(--ink);
+  background: white;
+  font-family: Arial, "Noto Sans KR", sans-serif;
+}
+
+.map-info-window__title {
+  overflow: hidden;
+  font-size: 13px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.map-info-window__address {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.map-info-window__summary {
+  display: -webkit-box;
+  margin: 2px 0;
+  overflow: hidden;
+  font-size: 10px;
+  line-height: 1.45;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.map-info-window__actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 3px;
+}
+
+.map-info-window__actions button,
+.map-info-window__actions a {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 32px;
+  padding: 6px 9px;
+  border: 1px solid var(--green-700);
+  border-radius: 7px;
+  font-size: 9px;
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.map-info-window__actions button {
+  color: white;
+  background: var(--green-700);
+}
+
+.map-info-window__actions a {
+  color: var(--green-800);
+  background: white;
+}
+
+.map-note.map-note--viewport {
+  color: #476458;
+}
+
 .map-note {
   margin: 8px 2px 13px;
   color: var(--muted);
@@ -1449,6 +1521,24 @@ a {
 
 .map-place-list__distance {
   white-space: nowrap;
+}
+
+.map-place-list__empty {
+  display: flex;
+  min-height: 94px;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 4px;
+  padding: 18px;
+  color: var(--muted);
+  text-align: center;
+  font-size: 10px;
+}
+
+.map-place-list__empty strong {
+  color: var(--ink);
+  font-size: 12px;
 }
 
 /* Auth, subscriptions, and review */
