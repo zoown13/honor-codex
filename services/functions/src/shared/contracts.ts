@@ -46,6 +46,7 @@ export interface PublicationOperation {
   id: string;
   fingerprint: string;
   changeIds: string[];
+  publishSources: BenefitChangeSource[];
   initialBaseline: boolean;
   status: "PREPARING" | "STAGED" | "DEPLOYING" | "DEPLOYED" | "COMPLETED" | "FAILED";
   createdAt: string;
