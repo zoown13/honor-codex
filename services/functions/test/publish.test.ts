@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { normalizeMmaFacility } from "@honor/core";
+import {
+  normalizeMmaFacility,
+  normalizeMmaNotice,
+  normalizeOrdinance,
+} from "@honor/core";
 import { createPublishHandler } from "../src/handlers/publish.js";
 import { DeploymentOutcomeUnknownError } from "../src/shared/contracts.js";
 import { FakeRepository, FakeStorage, httpEvent } from "./fakes.js";
@@ -8,6 +12,18 @@ const now = "2026-07-12T00:00:00.000Z";
 const benefit = normalizeMmaFacility({
   mmgudgigwan_cd: "1", udae_ggm: "테스트 시설", udsangse_cn: "10% 할인",
   udjiyeok_cd: "09", udggeopjong_gbcd: "05", udae_gbcd: "02",
+}, now);
+const noticeBenefit = normalizeMmaNotice({
+  gsgeul_no: "100",
+  title: "전국 혜택 공지",
+  url: "https://www.mma.go.kr/hall/board/boardView.do?gsgeul_no=100",
+}, now);
+const ordinanceBenefit = normalizeOrdinance({
+  id: "200",
+  title: "테스트 병역명문가 예우 조례",
+  localGovernment: "서울특별시",
+  url: "https://www.law.go.kr/LSW/ordinInfoP.do?ordinSeq=200",
+  matchingArticles: ["병역명문가를 예우한다."],
 }, now);
 
 function approvedChange(id = "chg-approved") {
@@ -77,10 +93,62 @@ describe("publish success gate", () => {
 
     const result = await handler(httpEvent("/v1/admin/publish", "POST"));
     expect(result.statusCode).toBe(409);
-    expect(JSON.parse(result.body)).toEqual({ error: "검수 대기 변경 1건을 모두 처리한 뒤 게시해 주세요." });
+    expect(JSON.parse(result.body)).toEqual({
+      error: "선택한 원천에 검수 대기 변경 1건이 있습니다. 승인 후 게시해 주세요.",
+    });
     expect(start).not.toHaveBeenCalled();
     expect(storage.benefits).toEqual([]);
     expect(repository.changes[0]?.status).toBe("APPROVED");
+  });
+
+  it("publishes approved facilities and notices while leaving pending ordinances untouched", async () => {
+    const repository = new FakeRepository();
+    const storage = new FakeStorage();
+    repository.changes.push(
+      { ...approvedChange("chg-facility"), source: "MMA_FACILITIES" },
+      {
+        ...approvedChange("chg-notice"),
+        benefitId: noticeBenefit.id,
+        after: noticeBenefit,
+        source: "MMA_NOTICES",
+      },
+      {
+        ...approvedChange("chg-ordinance"),
+        benefitId: ordinanceBenefit.id,
+        after: ordinanceBenefit,
+        source: "LAW_ORDINANCES",
+        status: "PENDING",
+      },
+    );
+    const immediate = vi.fn(async () => undefined);
+    const handler = createPublishHandler({
+      repository,
+      storage,
+      deployment: deployment(),
+      notifications: { immediate },
+      clock: { now: () => new Date(now) },
+    }, { ADMIN_EMAILS: "pilot@example.com", PUBLISH_ENABLED: "true" });
+
+    const result = await handler(httpEvent("/v1/admin/publish", "POST", {
+      sources: ["MMA_FACILITIES", "MMA_NOTICES"],
+    }));
+
+    expect(result.statusCode).toBe(200);
+    expect(JSON.parse(result.body)).toMatchObject({
+      publishedChanges: 2,
+      publishSources: ["MMA_FACILITIES", "MMA_NOTICES"],
+      notificationsSuppressed: true,
+    });
+    expect(repository.changes.map((change) => change.status)).toEqual([
+      "PUBLISHED",
+      "PUBLISHED",
+      "PENDING",
+    ]);
+    expect(storage.benefits.map((item) => item.id).sort()).toEqual([
+      benefit.id,
+      noticeBenefit.id,
+    ].sort());
+    expect(immediate).not.toHaveBeenCalled();
   });
 
   it("waits for deployment success, publishes the initial baseline, and suppresses notifications", async () => {
