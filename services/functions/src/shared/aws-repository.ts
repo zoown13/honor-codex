@@ -10,6 +10,7 @@ import {
   TransactWriteCommand,
   UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
+import { sha256Hex } from "@honor/core";
 import type { BenefitChange, DatasetManifest, PushSubscriptionRecord } from "@honor/core";
 import { BulkReviewConflictError, PublicationConflictError } from "./contracts.js";
 import type {
@@ -26,11 +27,15 @@ import { reviewSourceIdentity } from "./ingestion.js";
 interface RepositoryOptions {
   tableName: string;
   client?: DynamoDBDocumentClient;
+  sleep?: (milliseconds: number) => Promise<void>;
+  random?: () => number;
 }
 
 export class DynamoAppRepository implements AppRepository {
   readonly #tableName: string;
   readonly #client: DynamoDBDocumentClient;
+  readonly #sleep: (milliseconds: number) => Promise<void>;
+  readonly #random: () => number;
 
   constructor(options: RepositoryOptions) {
     if (!options.tableName.trim()) throw new Error("TABLE_NAME is required");
@@ -38,6 +43,10 @@ export class DynamoAppRepository implements AppRepository {
     this.#client = options.client ?? DynamoDBDocumentClient.from(new DynamoDBClient({}), {
       marshallOptions: { removeUndefinedValues: true },
     });
+    this.#sleep = options.sleep ?? ((milliseconds) => new Promise((resolve) => {
+      setTimeout(resolve, milliseconds);
+    }));
+    this.#random = options.random ?? Math.random;
   }
 
   async listSubscriptions(userId: string): Promise<StoredSubscription[]> {
@@ -489,9 +498,11 @@ export class DynamoAppRepository implements AppRepository {
     operationId: string,
   ): Promise<void> {
     const ids = [...new Set(changeIds)];
-    for (let index = 0; index < ids.length; index += 100) {
-      await this.#client.send(new TransactWriteCommand({
-        TransactItems: ids.slice(index, index + 100).map((id) => ({
+    for (let index = 0; index < ids.length; index += PUBLICATION_TRANSACTION_SIZE) {
+      const chunk = ids.slice(index, index + PUBLICATION_TRANSACTION_SIZE);
+      const input = {
+        ClientRequestToken: sha256Hex(`${operationId}\n${chunk.join("\n")}`).slice(0, 36),
+        TransactItems: chunk.map((id) => ({
           Update: {
             TableName: this.#tableName,
             Key: { pk: "CHANGE", sk: `CHG#${id}` },
@@ -514,7 +525,25 @@ export class DynamoAppRepository implements AppRepository {
             },
           },
         })),
-      }));
+      };
+      for (let attempt = 0; ; attempt += 1) {
+        try {
+          await this.#client.send(new TransactWriteCommand(input));
+          break;
+        } catch (error) {
+          if (!isPublicationThrottle(error) || attempt >= PUBLICATION_MAX_ATTEMPTS - 1) {
+            throw error;
+          }
+          const ceiling = Math.min(
+            PUBLICATION_RETRY_CAP_MS,
+            PUBLICATION_RETRY_BASE_MS * 2 ** attempt,
+          );
+          await this.#sleep(Math.floor(this.#random() * ceiling));
+        }
+      }
+      if (index + PUBLICATION_TRANSACTION_SIZE < ids.length) {
+        await this.#sleep(PUBLICATION_CHUNK_INTERVAL_MS);
+      }
     }
   }
 
@@ -616,4 +645,33 @@ function isTransactionConflict(error: unknown): boolean {
     : undefined;
   return reasons === undefined || reasons.some((reason) =>
     reason.Code === "ConditionalCheckFailed" || reason.Code === "TransactionConflict");
+}
+
+const PUBLICATION_TRANSACTION_SIZE = 25;
+const PUBLICATION_CHUNK_INTERVAL_MS = 200;
+const PUBLICATION_MAX_ATTEMPTS = 8;
+const PUBLICATION_RETRY_BASE_MS = 100;
+const PUBLICATION_RETRY_CAP_MS = 5_000;
+const PUBLICATION_RETRYABLE_ERROR_NAMES = new Set([
+  "ProvisionedThroughputExceededException",
+  "ThrottlingException",
+  "RequestLimitExceeded",
+  "TransactionInProgressException",
+]);
+const PUBLICATION_RETRYABLE_CANCELLATION_CODES = new Set([
+  "TransactionConflict",
+  "ProvisionedThroughputExceeded",
+  "ThrottlingError",
+]);
+
+function isPublicationThrottle(error: unknown): boolean {
+  if (typeof error !== "object" || error === null || !("name" in error)) return false;
+  const name = (error as { name?: string }).name;
+  if (name && PUBLICATION_RETRYABLE_ERROR_NAMES.has(name)) return true;
+  if (name !== "TransactionCanceledException" || !("CancellationReasons" in error)) return false;
+  const reasons = (error as { CancellationReasons?: Array<{ Code?: string }> }).CancellationReasons;
+  if (!reasons?.length) return false;
+  const codes = reasons.map((reason) => reason.Code).filter((code): code is string => code !== undefined);
+  return codes.some((code) => PUBLICATION_RETRYABLE_CANCELLATION_CODES.has(code))
+    && codes.every((code) => code === "None" || PUBLICATION_RETRYABLE_CANCELLATION_CODES.has(code));
 }
