@@ -1,5 +1,5 @@
 import { sha256Hex } from "@honor/core";
-import type { Benefit, BenefitChange } from "@honor/core";
+import type { Benefit, BenefitChange, BenefitChangeSource } from "@honor/core";
 import type {
   AppRepository,
   Clock,
@@ -13,10 +13,12 @@ import {
   PublicationConflictError,
 } from "../shared/contracts.js";
 import type { HttpEvent, HttpResult } from "../shared/http.js";
+import { inferReviewSource } from "../shared/ingestion.js";
 import {
   HttpError,
   json,
   method,
+  parseBody,
   requireAdmin,
   withHttpErrors,
 } from "../shared/http.js";
@@ -27,6 +29,13 @@ import {
   repository,
   systemClock,
 } from "../shared/runtime.js";
+
+const ALL_PUBLISH_SOURCES: readonly BenefitChangeSource[] = [
+  "MMA_FACILITIES",
+  "MMA_NOTICES",
+  "LAW_ORDINANCES",
+];
+const PUBLISH_SOURCE_SET = new Set<BenefitChangeSource>(ALL_PUBLISH_SOURCES);
 
 export function createPublishHandler(
   deps: {
@@ -46,23 +55,33 @@ export function createPublishHandler(
     }
 
     const now = (deps.clock ?? systemClock).now().toISOString();
+    const requestedSources = parsePublishSources(event);
     let operation = await deps.repository.getPublicationOperation();
     if (!operation || operation.status === "COMPLETED" || operation.status === "FAILED") {
-      const pending = await deps.repository.listChanges(["PENDING"]);
+      const pending = (await deps.repository.listChanges(["PENDING"]))
+        .filter((change) => changeBelongsToSources(change, requestedSources));
       if (pending.length) {
-        throw new HttpError(409, `검수 대기 변경 ${pending.length}건을 모두 처리한 뒤 게시해 주세요.`);
+        throw new HttpError(
+          409,
+          `선택한 원천에 검수 대기 변경 ${pending.length}건이 있습니다. 승인 후 게시해 주세요.`,
+        );
       }
       const changes = (await deps.repository.listChanges(["AUTO_APPROVED", "APPROVED"]))
+        .filter((change) => changeBelongsToSources(change, requestedSources))
         .sort((a, b) => a.detectedAt.localeCompare(b.detectedAt) || a.id.localeCompare(b.id));
       if (!changes.length) throw new HttpError(409, "게시할 승인 변경이 없습니다.");
 
       const current = await deps.storage.loadBenefits();
       const changeIds = changes.map((change) => change.id);
-      const fingerprint = sha256Hex([...changeIds].sort().join("\n"));
+      const fingerprint = sha256Hex([
+        [...requestedSources].sort().join(","),
+        ...[...changeIds].sort(),
+      ].join("\n"));
       const proposed: PublicationOperation = {
         id: `pub:${fingerprint.slice(0, 32)}`,
         fingerprint,
         changeIds,
+        publishSources: [...requestedSources],
         initialBaseline: current.length === 0,
         status: "PREPARING",
         createdAt: now,
@@ -76,6 +95,8 @@ export function createPublishHandler(
         }
         throw error;
       }
+    } else if (!sameSources(operation.publishSources, requestedSources)) {
+      throw new HttpError(409, "진행 중인 게시 작업의 원천 범위가 현재 요청과 다릅니다.");
     }
 
     if (operation.status === "PREPARING") {
@@ -184,9 +205,41 @@ export function createPublishHandler(
       publishedChanges: operation.changeIds.length,
       deploymentJobId,
       deploymentStatus: "SUCCEED",
+      publishSources: operation.publishSources,
       ...(operation.initialBaseline ? { notificationsSuppressed: true } : {}),
     });
   });
+}
+
+function parsePublishSources(event: HttpEvent): BenefitChangeSource[] {
+  if (!event.body) return [...ALL_PUBLISH_SOURCES];
+  const body = parseBody(event);
+  if (body.sources === undefined) return [...ALL_PUBLISH_SOURCES];
+  if (!Array.isArray(body.sources) || body.sources.length < 1 || body.sources.length > ALL_PUBLISH_SOURCES.length) {
+    throw new HttpError(400, "sources는 1개 이상 3개 이하의 원천 배열이어야 합니다.");
+  }
+  const sources = [...new Set(body.sources.map((source) => {
+    if (typeof source !== "string" || !PUBLISH_SOURCE_SET.has(source as BenefitChangeSource)) {
+      throw new HttpError(400, "sources에 지원하지 않는 원천이 포함되어 있습니다.");
+    }
+    return source as BenefitChangeSource;
+  }))];
+  return ALL_PUBLISH_SOURCES.filter((source) => sources.includes(source));
+}
+
+function changeBelongsToSources(
+  change: BenefitChange,
+  sources: readonly BenefitChangeSource[],
+): boolean {
+  const source = inferReviewSource(change);
+  return source !== undefined && sources.includes(source);
+}
+
+function sameSources(
+  left: readonly BenefitChangeSource[],
+  right: readonly BenefitChangeSource[],
+): boolean {
+  return left.length === right.length && left.every((source, index) => source === right[index]);
 }
 
 async function rollbackAndFail(
