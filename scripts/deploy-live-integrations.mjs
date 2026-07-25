@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { readFileSync, statSync } from "node:fs";
+import { readFileSync, rmSync, statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
@@ -96,19 +96,18 @@ if (mode === "configure") {
   );
 }
 
-const npmExecPath = process.env.npm_execpath;
-if (!npmExecPath) fail("Run this script through the pnpm deploy:live command.");
+rmSync(path.join(root, "infra", "cdk.out"), { recursive: true, force: true });
 
 const operation = source ? `${mode}:${source}` : mode;
 process.stdout.write(`Starting secret-redacted live integration deployment: ${operation}\n`);
+const cdkCliPath = path.join(root, "infra", "node_modules", "aws-cdk", "bin", "cdk");
+const cdkAppCommand = `${JSON.stringify(process.execPath)} node_modules/tsx/dist/cli.mjs bin/honor-benefits-pilot.ts`;
 const args = [
-  npmExecPath,
-  "--filter",
-  "@honor/infra",
-  "exec",
-  "cdk",
+  cdkCliPath,
   "deploy",
   "HonorBenefitsPilotStack",
+  "--app",
+  cdkAppCommand,
   "--profile",
   "honor-pilot-deployer",
   "--require-approval",
@@ -120,10 +119,20 @@ const args = [
 ];
 for (const parameter of parameters) args.push("--parameters", parameter);
 
+const childEnv = Object.fromEntries(
+  Object.entries(process.env).filter(([key]) => key.toLowerCase() !== "path")
+);
+childEnv.PATH = [
+  path.dirname(process.execPath),
+  process.env.APPDATA ? path.join(process.env.APPDATA, "npm") : undefined,
+  path.join(root, "infra", "node_modules", ".bin"),
+  process.env.PATH
+].filter(Boolean).join(path.delimiter);
+
 const result = spawnSync(process.execPath, args, {
-  cwd: root,
+  cwd: path.join(root, "infra"),
   env: {
-    ...process.env,
+    ...childEnv,
     AWS_PROFILE: "honor-pilot-deployer",
     AWS_REGION: "ap-northeast-2",
     AWS_DEFAULT_REGION: "ap-northeast-2"

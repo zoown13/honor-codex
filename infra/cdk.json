@@ -1,5 +1,5 @@
 {
-  "app": "pnpm exec tsx bin/honor-benefits-pilot.ts",
+  "app": "node node_modules/tsx/dist/cli.mjs bin/honor-benefits-pilot.ts",
   "context": {
     "@aws-cdk/aws-lambda:recognizeLayerVersion": true,
     "@aws-cdk/core:checkSecretUsage": true,
