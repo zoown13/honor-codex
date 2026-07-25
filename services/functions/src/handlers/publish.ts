@@ -20,6 +20,7 @@ import {
   method,
   parseBody,
   requireAdmin,
+  requirePilotAdmin,
   withHttpErrors,
 } from "../shared/http.js";
 import {
@@ -48,7 +49,8 @@ export function createPublishHandler(
   env: NodeJS.ProcessEnv = process.env,
 ) {
   return (event: HttpEvent): Promise<HttpResult> => withHttpErrors(async () => {
-    requireAdmin(event, env);
+    if (event.rawPath.startsWith("/v1/pilot-admin/")) requirePilotAdmin(event, env);
+    else requireAdmin(event, env);
     if (method(event) !== "POST") throw new HttpError(405, "허용되지 않은 요청입니다.");
     if (env.PUBLISH_ENABLED?.trim().toLocaleLowerCase("en-US") !== "true") {
       throw new HttpError(503, "게시 기능이 현재 비활성화되어 있습니다.");

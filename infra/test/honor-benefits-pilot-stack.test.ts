@@ -147,7 +147,7 @@ describe("HonorBenefitsPilotStack", () => {
       AllowedOAuthFlows: Match.absent()
     });
     template.resourceCountIs("AWS::ApiGatewayV2::Authorizer", 1);
-    template.resourceCountIs("AWS::ApiGatewayV2::Route", 20);
+    template.resourceCountIs("AWS::ApiGatewayV2::Route", 21);
     template.hasResourceProperties("AWS::ApiGatewayV2::Route", {
       RouteKey: "POST /v1/auth/otp/start",
       AuthorizationType: "NONE"
@@ -178,6 +178,10 @@ describe("HonorBenefitsPilotStack", () => {
     });
     template.hasResourceProperties("AWS::ApiGatewayV2::Route", {
       RouteKey: "POST /v1/pilot-admin/review-batches/{batchId}/approve",
+      AuthorizationType: "NONE"
+    });
+    template.hasResourceProperties("AWS::ApiGatewayV2::Route", {
+      RouteKey: "POST /v1/pilot-admin/publish",
       AuthorizationType: "NONE"
     });
     template.hasResourceProperties("AWS::ApiGatewayV2::Api", {
@@ -273,7 +277,7 @@ describe("HonorBenefitsPilotStack", () => {
     expect(keys("honor-pilot-admin-reviews")).toEqual(["ADMIN_EMAILS", "PILOT_ADMIN_TOKEN", "TABLE_NAME"]);
     expect(keys("honor-pilot-publish")).toEqual([
       "ADMIN_EMAILS", "AMPLIFY_APP_ID", "AMPLIFY_BRANCH", "DATA_BUCKET", "DATA_PREFIX",
-      "NOTIFICATION_FUNCTION_NAME", "PUBLISH_ENABLED", "RAW_PREFIX", "TABLE_NAME"
+      "NOTIFICATION_FUNCTION_NAME", "PILOT_ADMIN_TOKEN", "PUBLISH_ENABLED", "RAW_PREFIX", "TABLE_NAME"
     ]);
     expect(environment("honor-pilot-publish").PUBLISH_ENABLED).toEqual({ Ref: "PublishEnabled" });
     const publishLambda = lambdaResources.find(

@@ -74,6 +74,35 @@ describe("publish success gate", () => {
     expect(JSON.stringify(published)).not.toContain("fake-secret");
   });
 
+  it("uses the pilot admin passcode without weakening the publish safety gate", async () => {
+    const handler = createPublishHandler({
+      repository: new FakeRepository(),
+      storage: new FakeStorage(),
+      deployment: deployment(),
+      notifications: { immediate: vi.fn(async () => undefined) },
+      clock: { now: () => new Date(now) },
+    }, {
+      PILOT_ADMIN_TOKEN: "separate-pilot-admin-token",
+      PUBLISH_ENABLED: "false",
+    });
+    const path = "/v1/pilot-admin/publish";
+
+    const missing = await handler(httpEvent(path, "POST"));
+    const wrong = await handler(httpEvent(path, "POST", undefined, {
+      headers: { "x-honor-pilot-admin": "wrong-pilot-admin-token" },
+    }));
+    const accepted = await handler(httpEvent(path, "POST", undefined, {
+      headers: { "x-honor-pilot-admin": "separate-pilot-admin-token" },
+    }));
+
+    expect(missing.statusCode).toBe(401);
+    expect(wrong.statusCode).toBe(403);
+    expect(accepted.statusCode).toBe(503);
+    expect(JSON.parse(accepted.body)).toEqual({
+      error: "게시 기능이 현재 비활성화되어 있습니다.",
+    });
+  });
+
   it("fails closed before reading or writing publish state unless explicitly enabled", async () => {
     const repository = new FakeRepository();
     const storage = new FakeStorage();

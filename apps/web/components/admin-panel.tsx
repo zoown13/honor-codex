@@ -318,7 +318,7 @@ export function AdminPanel() {
 
       <div className="admin-rule admin-rule--locked" role="note">
         <strong>승인과 게시는 분리되어 있습니다</strong>
-        <span>여기서는 검수 상태만 승인합니다. 게시 기능은 잠겨 있으며 별도 확인 단계 전에는 실제 서비스 데이터가 바뀌지 않습니다.</span>
+        <span>여기서는 검수 상태만 승인합니다. 게시 API도 같은 관리자 암호를 사용하지만 운영 잠금을 별도로 해제하기 전에는 실제 서비스 데이터가 바뀌지 않습니다.</span>
       </div>
 
       {activeOperation ? (

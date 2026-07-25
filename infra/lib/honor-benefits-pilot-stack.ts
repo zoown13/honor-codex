@@ -638,6 +638,7 @@ export class HonorBenefitsPilotStack extends Stack {
         AMPLIFY_APP_ID: amplifyApp.attrAppId,
         AMPLIFY_BRANCH: amplifyBranchName.valueAsString,
         ADMIN_EMAILS: adminEmails.valueAsString,
+        PILOT_ADMIN_TOKEN: pilotAdminToken.valueAsString,
         PUBLISH_ENABLED: publishEnabled.valueAsString
       },
       memorySize: 512,
@@ -902,6 +903,11 @@ export class HonorBenefitsPilotStack extends Stack {
       methods: [apigwv2.HttpMethod.POST],
       integration: publishIntegration,
       authorizer: jwtAuthorizer
+    });
+    httpApi.addRoutes({
+      path: "/v1/pilot-admin/publish",
+      methods: [apigwv2.HttpMethod.POST],
+      integration: publishIntegration
     });
 
     const apiAccessLogs = new logs.LogGroup(this, "HttpApiAccessLogs", {
