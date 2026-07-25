@@ -4,7 +4,7 @@ import {
   normalizeMmaNotice,
   normalizeOrdinance,
 } from "@honor/core";
-import { createPublishHandler } from "../src/handlers/publish.js";
+import { applyChanges, createPublishHandler } from "../src/handlers/publish.js";
 import { DeploymentOutcomeUnknownError } from "../src/shared/contracts.js";
 import { FakeRepository, FakeStorage, httpEvent } from "./fakes.js";
 
@@ -50,6 +50,30 @@ function deployment(options: {
 }
 
 describe("publish success gate", () => {
+  it("removes law API credentials from previously stored ordinance links before publication", () => {
+    const unsafeUrl = "/DRF/lawService.do?OC=fake-secret&target=ordin&MST=2112343&type=HTML";
+    const unsafe = {
+      ...ordinanceBenefit,
+      source: { ...ordinanceBenefit.source, url: unsafeUrl },
+      evidence: ordinanceBenefit.evidence.map((item) => ({ ...item, sourceUrl: unsafeUrl })),
+    };
+    const [published] = applyChanges([], [{
+      id: "chg-ordinance",
+      benefitId: unsafe.id,
+      action: "ADD",
+      risk: "HIGH",
+      status: "APPROVED",
+      changedFields: ["created"],
+      after: unsafe,
+      detectedAt: now,
+    }]);
+
+    expect(published?.source.url).toBe("https://www.law.go.kr/LSW/ordinInfoP.do?ordinSeq=2112343");
+    expect(published?.evidence[0]?.sourceUrl).toBe("https://www.law.go.kr/LSW/ordinInfoP.do?ordinSeq=2112343");
+    expect(JSON.stringify(published)).not.toContain("OC=");
+    expect(JSON.stringify(published)).not.toContain("fake-secret");
+  });
+
   it("fails closed before reading or writing publish state unless explicitly enabled", async () => {
     const repository = new FakeRepository();
     const storage = new FakeStorage();

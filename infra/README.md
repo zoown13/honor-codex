@@ -7,6 +7,11 @@ workload. Persistent S3, DynamoDB, Cognito and SQS resources use retain policies
 ## Required deployment parameters
 
 - `PilotSlug`: 22 or more URL-safe random characters (128 bits or stronger).
+- `PilotAdminToken`: a different 22+ character URL-safe random value used only
+  for owner review. It is entered in the admin screen and retained only for the
+  current browser tab; never reuse `PilotSlug`.
+  Deploy or rotate only this value with `pnpm deploy:live -- admin-passcode` so
+  ingestion schedules and the publish guard retain their current settings.
 - `AlertEmail`: recipient for SNS and AWS Budgets alerts.
 - `SesFromEmail`: the SES sender identity for weekly notifications and, after
   verification, Cognito email OTP.
@@ -109,8 +114,9 @@ the first deployment, so use this verification-gated two-pass setup:
    SES identity and enables `EMAIL_OTP`.
 
 `PilotUrl` contains the private shared path. The slug is not an authentication
-boundary. Cognito is required only for follows, push registrations and owner
-review operations.
+boundary. Cognito remains required for follows and push registrations. The
+private pilot owner review uses the separate `PilotAdminToken`; production
+hardening should restore identity-based administrator authentication.
 
 ## Validation
 

@@ -71,6 +71,14 @@ export class HonorBenefitsPilotStack extends Stack {
       constraintDescription: "Use at least 128 bits of URL-safe random data (22+ base64url characters).",
       description: "Private URL slug used at /pilot/{slug}. This is obscurity, not authentication."
     });
+    const pilotAdminToken = new CfnParameter(this, "PilotAdminToken", {
+      type: "String",
+      noEcho: true,
+      minLength: 22,
+      allowedPattern: "[A-Za-z0-9_-]+",
+      constraintDescription: "Use at least 128 bits of URL-safe random data (22+ base64url characters).",
+      description: "Separate owner-review passcode for the private pilot. Never expose it in the shared URL or web build."
+    });
     const adminEmails = new CfnParameter(this, "AdminEmails", {
       type: "String",
       default: "",
@@ -618,7 +626,8 @@ export class HonorBenefitsPilotStack extends Stack {
       entry: "admin-reviews.ts",
       environment: {
         ...repositoryEnvironment,
-        ADMIN_EMAILS: adminEmails.valueAsString
+        ADMIN_EMAILS: adminEmails.valueAsString,
+        PILOT_ADMIN_TOKEN: pilotAdminToken.valueAsString
       }
     });
     const publishFunction = createFunction("Publish", {
@@ -770,7 +779,7 @@ export class HonorBenefitsPilotStack extends Stack {
           apigwv2.CorsHttpMethod.DELETE,
           apigwv2.CorsHttpMethod.OPTIONS
         ],
-        allowHeaders: ["authorization", "content-type"],
+        allowHeaders: ["authorization", "content-type", "x-honor-pilot-admin"],
         maxAge: Duration.hours(1)
       }
     });
@@ -862,6 +871,31 @@ export class HonorBenefitsPilotStack extends Stack {
       methods: [apigwv2.HttpMethod.POST],
       integration: adminIntegration,
       authorizer: jwtAuthorizer
+    });
+    httpApi.addRoutes({
+      path: "/v1/pilot-admin/reviews",
+      methods: [apigwv2.HttpMethod.GET],
+      integration: adminIntegration
+    });
+    httpApi.addRoutes({
+      path: "/v1/pilot-admin/reviews/{reviewId}",
+      methods: [apigwv2.HttpMethod.POST],
+      integration: adminIntegration
+    });
+    httpApi.addRoutes({
+      path: "/v1/pilot-admin/review-batches",
+      methods: [apigwv2.HttpMethod.GET],
+      integration: adminIntegration
+    });
+    httpApi.addRoutes({
+      path: "/v1/pilot-admin/review-batches/{batchId}",
+      methods: [apigwv2.HttpMethod.GET],
+      integration: adminIntegration
+    });
+    httpApi.addRoutes({
+      path: "/v1/pilot-admin/review-batches/{batchId}/approve",
+      methods: [apigwv2.HttpMethod.POST],
+      integration: adminIntegration
     });
     httpApi.addRoutes({
       path: "/v1/admin/publish",

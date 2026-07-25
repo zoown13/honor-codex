@@ -1,4 +1,4 @@
-import { sha256Hex } from "@honor/core";
+import { sha256Hex, withPublicOrdinanceUrls } from "@honor/core";
 import type { Benefit, BenefitChange, BenefitChangeSource } from "@honor/core";
 import type {
   AppRepository,
@@ -273,14 +273,14 @@ function requiredPublicationField(value: string | undefined, label: string): str
 }
 
 export function applyChanges(current: readonly Benefit[], changes: readonly BenefitChange[]): Benefit[] {
-  const items = new Map(current.map((benefit) => [benefit.id, benefit]));
+  const items = new Map(current.map((benefit) => [benefit.id, withPublicOrdinanceUrls(benefit)]));
   for (const change of changes) {
     if (change.action === "DELETE") {
       items.delete(change.benefitId);
       continue;
     }
     if (!change.after) throw new Error(`Change ${change.id} has no after value`);
-    items.set(change.benefitId, { ...change.after, reviewState: "REVIEWED" });
+    items.set(change.benefitId, withPublicOrdinanceUrls({ ...change.after, reviewState: "REVIEWED" }));
   }
   return [...items.values()].sort((a, b) => a.id.localeCompare(b.id));
 }

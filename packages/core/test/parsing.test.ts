@@ -7,6 +7,7 @@ import {
   parseMmaFacilityPayload,
   parseMmaNotices,
   parseOrdinanceSearch,
+  publicOrdinanceUrl,
 } from "../src/index.js";
 import { mmaJsonpFixture, ordinanceJsonFixture } from "./fixtures/mma.js";
 
@@ -42,6 +43,7 @@ describe("safe source parsing", () => {
     expect(parseOrdinanceSearch(ordinanceJsonFixture)).toEqual(expect.objectContaining({
       records: [expect.objectContaining({
         id: "1234567", localGovernment: "서울특별시", effectiveAt: "2025-01-01",
+        url: "https://www.law.go.kr/LSW/ordinInfoP.do?ordinSeq=2112343",
       })],
       totalCount: 1, page: 1, rowCount: 1, section: "ordinNm", target: "ordin",
     }));
@@ -61,6 +63,34 @@ describe("safe source parsing", () => {
       "이 조례는 병역명문가 지원에 관한 경과조치를 둔다.",
       "병역명문가 예우 대상을 명확히 하려는 것임.",
     ]);
+  });
+
+  it("converts ordinance API links to public source links without retaining OC credentials", () => {
+    const expected = "https://www.law.go.kr/LSW/ordinInfoP.do?ordinSeq=2112343";
+    expect(publicOrdinanceUrl(
+      "/DRF/lawService.do?OC=fake-secret&target=ordin&MST=2112343&type=HTML",
+      "1234567",
+      "서울특별시 병역명문가 예우에 관한 조례",
+    )).toBe(expected);
+    expect(publicOrdinanceUrl(
+      "https://www.law.go.kr/DRF/lawService.do?OC=fake-secret&amp;target=ordin&amp;MST=2112343",
+      "1234567",
+      "서울특별시 병역명문가 예우에 관한 조례",
+    )).toBe(expected);
+    expect(publicOrdinanceUrl(
+      "https://www.law.go.kr/LSW/ordinInfoP.do?ordinSeq=2112343&OC=must-not-survive",
+      "1234567",
+      "서울특별시 병역명문가 예우에 관한 조례",
+    )).toBe(expected);
+
+    const fallback = publicOrdinanceUrl(
+      "https://example.com/not-official?OC=must-not-survive",
+      "1234567",
+      "서울특별시 병역명문가 예우에 관한 조례",
+    );
+    expect(fallback).toContain("https://www.law.go.kr/LSW/lsSc.do?query=");
+    expect(fallback).not.toContain("OC=");
+    expect(fallback).not.toContain("must-not-survive");
   });
 
   it("accepts numeric metadata and a single law record", () => {

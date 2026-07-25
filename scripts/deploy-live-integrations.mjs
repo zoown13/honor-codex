@@ -18,7 +18,7 @@ const sourceUrlParameters = {
 const cliArgs = process.argv.slice(2);
 if (cliArgs[0] === "--") cliArgs.shift();
 const [mode, source, extraArgument] = cliArgs;
-const supportedModes = new Set(["gate-off", "configure", "gate-on", "publish-on", "publish-off"]);
+const supportedModes = new Set(["gate-off", "configure", "admin-passcode", "gate-on", "publish-on", "publish-off"]);
 const scheduleParameters = {
   facilities: "FacilitiesIngestionScheduleEnabled",
   notices: "NoticesIngestionScheduleEnabled",
@@ -29,11 +29,11 @@ const publishMode = mode === "publish-on" || mode === "publish-off";
 if (extraArgument !== undefined ||
     !supportedModes.has(mode) ||
     (mode === "gate-on" && !(source in scheduleParameters)) ||
-    ((mode === "configure" || publishMode) && source !== undefined) ||
+    ((mode === "configure" || mode === "admin-passcode" || publishMode) && source !== undefined) ||
     (mode === "gate-off" && source !== undefined && !(source in scheduleParameters))) {
   fail([
     "Usage: pnpm deploy:live -- <gate-off [facilities|notices|ordinances]",
-    "|configure|gate-on <facilities|notices|ordinances>|publish-on|publish-off>",
+    "|configure|admin-passcode|gate-on <facilities|notices|ordinances>|publish-on|publish-off>",
   ].join(" "));
 }
 
@@ -52,15 +52,29 @@ if (mode === "publish-on") {
     parameters.push(`HonorBenefitsPilotStack:${parameter}=false`);
   }
   parameters.push("HonorBenefitsPilotStack:PublishEnabled=false");
-} else {
+} else if (mode !== "admin-passcode") {
   const parameter = scheduleParameters[source];
   parameters.push(`HonorBenefitsPilotStack:${parameter}=${mode === "gate-on" ? "true" : "false"}`);
+}
+
+if (mode === "admin-passcode") {
+  const env = parseEnv(await readFile(configPath, "utf8"));
+  const pilotAdminToken = required(env, "PILOT_ADMIN_TOKEN");
+  if (!/^[A-Za-z0-9_-]{22,}$/.test(pilotAdminToken)) {
+    fail("PILOT_ADMIN_TOKEN must be 22+ URL-safe characters in .env.deploy.local");
+  }
+  assertSecretsAreNotTracked([pilotAdminToken]);
+  parameters.push(`HonorBenefitsPilotStack:PilotAdminToken=${pilotAdminToken}`);
 }
 
 if (mode === "configure") {
   const env = parseEnv(await readFile(configPath, "utf8"));
   const kakaoKey = required(env, "NEXT_PUBLIC_KAKAO_MAP_APP_KEY");
   const lawOc = required(env, "LAW_API_OC");
+  const pilotAdminToken = required(env, "PILOT_ADMIN_TOKEN");
+  if (!/^[A-Za-z0-9_-]{22,}$/.test(pilotAdminToken)) {
+    fail("PILOT_ADMIN_TOKEN must be 22+ URL-safe characters in .env.deploy.local");
+  }
   for (const [parameter, { envKey, defaultValue }] of Object.entries(sourceUrlParameters)) {
     const value = env[envKey]?.trim() || defaultValue;
     let parsed;
@@ -73,10 +87,11 @@ if (mode === "configure") {
   if (env.MMA_LIVE_INGESTION_ENABLED?.trim().toLowerCase() !== "true") {
     fail("MMA_LIVE_INGESTION_ENABLED must be true in .env.deploy.local");
   }
-  assertSecretsAreNotTracked([kakaoKey, lawOc]);
+  assertSecretsAreNotTracked([kakaoKey, lawOc, pilotAdminToken]);
   parameters.push(
     `HonorBenefitsPilotStack:KakaoJavascriptKey=${kakaoKey}`,
     `HonorBenefitsPilotStack:LawApiOc=${lawOc}`,
+    `HonorBenefitsPilotStack:PilotAdminToken=${pilotAdminToken}`,
     "HonorBenefitsPilotStack:MmaLiveIngestionEnabled=true"
   );
 }

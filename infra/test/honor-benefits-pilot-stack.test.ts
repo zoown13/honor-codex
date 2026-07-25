@@ -63,6 +63,12 @@ describe("HonorBenefitsPilotStack", () => {
       AllowedValues: ["true", "false"],
       Description: expect.stringContaining("only after the SES sender identity")
     });
+    expect(synthesized.Parameters.PilotAdminToken).toEqual(expect.objectContaining({
+      Type: "String",
+      NoEcho: true,
+      MinLength: 22,
+      AllowedPattern: "[A-Za-z0-9_-]+"
+    }));
     expect(synthesized.Conditions.EmailOtpEnabledCondition).toEqual({
       "Fn::Equals": [{ Ref: "EmailOtpEnabled" }, "true"]
     });
@@ -141,7 +147,7 @@ describe("HonorBenefitsPilotStack", () => {
       AllowedOAuthFlows: Match.absent()
     });
     template.resourceCountIs("AWS::ApiGatewayV2::Authorizer", 1);
-    template.resourceCountIs("AWS::ApiGatewayV2::Route", 15);
+    template.resourceCountIs("AWS::ApiGatewayV2::Route", 20);
     template.hasResourceProperties("AWS::ApiGatewayV2::Route", {
       RouteKey: "POST /v1/auth/otp/start",
       AuthorizationType: "NONE"
@@ -161,6 +167,23 @@ describe("HonorBenefitsPilotStack", () => {
     template.hasResourceProperties("AWS::ApiGatewayV2::Route", {
       RouteKey: "POST /v1/admin/review-batches/{batchId}/approve",
       AuthorizationType: "JWT"
+    });
+    template.hasResourceProperties("AWS::ApiGatewayV2::Route", {
+      RouteKey: "GET /v1/pilot-admin/review-batches",
+      AuthorizationType: "NONE"
+    });
+    template.hasResourceProperties("AWS::ApiGatewayV2::Route", {
+      RouteKey: "GET /v1/pilot-admin/review-batches/{batchId}",
+      AuthorizationType: "NONE"
+    });
+    template.hasResourceProperties("AWS::ApiGatewayV2::Route", {
+      RouteKey: "POST /v1/pilot-admin/review-batches/{batchId}/approve",
+      AuthorizationType: "NONE"
+    });
+    template.hasResourceProperties("AWS::ApiGatewayV2::Api", {
+      CorsConfiguration: {
+        AllowHeaders: Match.arrayWith(["x-honor-pilot-admin"])
+      }
     });
     template.hasResourceProperties("AWS::ApiGatewayV2::Stage", {
       StageName: "$default",
@@ -247,7 +270,7 @@ describe("HonorBenefitsPilotStack", () => {
       "ADMIN_EMAILS", "PILOT_ALLOWED_EMAILS", "USER_POOL_CLIENT_ID", "USER_POOL_ID"
     ]);
     expect(keys("honor-pilot-push-subscriptions")).toEqual(["TABLE_NAME", "USER_POOL_ID"]);
-    expect(keys("honor-pilot-admin-reviews")).toEqual(["ADMIN_EMAILS", "TABLE_NAME"]);
+    expect(keys("honor-pilot-admin-reviews")).toEqual(["ADMIN_EMAILS", "PILOT_ADMIN_TOKEN", "TABLE_NAME"]);
     expect(keys("honor-pilot-publish")).toEqual([
       "ADMIN_EMAILS", "AMPLIFY_APP_ID", "AMPLIFY_BRANCH", "DATA_BUCKET", "DATA_PREFIX",
       "NOTIFICATION_FUNCTION_NAME", "PUBLISH_ENABLED", "RAW_PREFIX", "TABLE_NAME"

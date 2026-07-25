@@ -1,3 +1,4 @@
+import { timingSafeEqual } from "node:crypto";
 import type {
   APIGatewayProxyEventV2WithJWTAuthorizer,
   APIGatewayProxyStructuredResultV2,
@@ -55,6 +56,25 @@ export function requireAdmin(event: HttpEvent, env: NodeJS.ProcessEnv = process.
   const allowed = (env.ADMIN_EMAILS ?? "").split(",").map((v) => v.trim().toLocaleLowerCase("en-US")).filter(Boolean);
   if (!user.groups.includes("ADMIN") && !allowed.includes(user.email)) throw new HttpError(403, "관리자 권한이 필요합니다.");
   return user;
+}
+
+export function requirePilotAdmin(
+  event: Pick<HttpEvent, "headers">,
+  env: NodeJS.ProcessEnv = process.env,
+): { userId: string; email: string } {
+  const expected = env.PILOT_ADMIN_TOKEN?.trim();
+  if (!expected) throw new HttpError(503, "파일럿 관리자 접근이 설정되지 않았습니다.");
+  const provided = Object.entries(event.headers ?? {})
+    .find(([key]) => key.toLocaleLowerCase("en-US") === "x-honor-pilot-admin")?.[1]
+    ?.trim();
+  if (!provided) throw new HttpError(401, "파일럿 관리자 링크에서 접근해 주세요.");
+  const expectedBuffer = Buffer.from(expected, "utf8");
+  const providedBuffer = Buffer.from(provided, "utf8");
+  if (expectedBuffer.length !== providedBuffer.length || !timingSafeEqual(expectedBuffer, providedBuffer)) {
+    throw new HttpError(403, "파일럿 관리자 접근값이 올바르지 않습니다.");
+  }
+  const reviewer = (env.ADMIN_EMAILS ?? "").split(",")[0]?.trim().toLocaleLowerCase("en-US") || "pilot-owner";
+  return { userId: "pilot-shared-link", email: reviewer };
 }
 
 export function withHttpErrors(fn: () => Promise<HttpResult>): Promise<HttpResult> {

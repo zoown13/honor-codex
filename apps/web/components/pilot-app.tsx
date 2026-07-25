@@ -303,11 +303,7 @@ export function PilotApp({ slug }: PilotAppProps) {
         ) : view === "follow" ? (
           <SubscriptionsPanel benefits={benefits} onPendingConsumed={() => setPendingFollow(undefined)} onSessionChange={handleSessionChange} {...(pendingFollow ? { pendingBenefit: pendingFollow } : {})} />
         ) : view === "admin" ? (
-          <AdminPanel
-            session={session}
-            onOpenLogin={() => changeView("follow")}
-            onSessionExpired={() => setSession(null)}
-          />
+          <AdminPanel />
         ) : (
           <section className="results-section" aria-labelledby="results-title">
             <div className="section-heading">

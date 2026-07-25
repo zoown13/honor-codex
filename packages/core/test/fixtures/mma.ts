@@ -35,7 +35,7 @@ export const ordinanceJsonFixture = JSON.stringify({
       "공포일자": "20250101",
       "시행일자": "20250101",
       "제개정구분명": "일부개정",
-      "자치법규상세링크": "https://www.law.go.kr/example",
+      "자치법규상세링크": "/DRF/lawService.do?OC=fake-test-key&target=ordin&MST=2112343&type=HTML",
     }],
   },
 });

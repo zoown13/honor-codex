@@ -1,19 +1,22 @@
 "use client";
 
+import { publicOrdinanceUrl, type Benefit } from "@honor/core";
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import {
   ApiError,
   REVIEW_SOURCES,
   approveReviewChunk,
   clearActiveReviewOperation,
-  clearSession,
+  clearPilotAdminAccess,
   createReviewOperationId,
   getActiveReviewOperation,
+  getReviewBatchPage,
   getReviewSummary,
   isApiError,
   saveActiveReviewOperation,
+  setPilotAdminAccess,
   type ActiveReviewOperation,
-  type AuthSession,
+  type ReviewBatchPage,
   type ReviewSource,
   type ReviewSummaryGroup
 } from "../lib/api";
@@ -37,14 +40,13 @@ const SOURCE_META: Record<ReviewSource, { label: string; description: string; sy
   }
 };
 
-interface AdminPanelProps {
-  session: AuthSession | null;
-  onOpenLogin: () => void;
-  onSessionExpired: () => void;
-}
-
 function currentBenefit(change: ReviewSummaryGroup["samples"][number]) {
   return change.after ?? change.before;
+}
+
+function reviewSourceUrl(benefit: Benefit) {
+  if (benefit.type === "ORDINANCE") return publicOrdinanceUrl(benefit.source.url, benefit.source.id, benefit.title);
+  return benefit.source.url;
 }
 
 function progressPercent(operation: ActiveReviewOperation) {
@@ -52,24 +54,24 @@ function progressPercent(operation: ActiveReviewOperation) {
   return Math.min(100, Math.round((operation.approvedCount / operation.expectedCount) * 100));
 }
 
-export function AdminPanel({ session, onOpenLogin, onSessionExpired }: AdminPanelProps) {
+export function AdminPanel() {
   const [groups, setGroups] = useState<ReviewSummaryGroup[]>([]);
   const [unclassifiedCount, setUnclassifiedCount] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [sessionExpired, setSessionExpired] = useState(false);
+  const [accessRequired, setAccessRequired] = useState(false);
+  const [accessInput, setAccessInput] = useState("");
+  const [reviewListGroup, setReviewListGroup] = useState<ReviewSummaryGroup | null>(null);
+  const [reviewPage, setReviewPage] = useState<ReviewBatchPage | null>(null);
+  const [reviewPageIndex, setReviewPageIndex] = useState(0);
+  const [reviewPageCursors, setReviewPageCursors] = useState<Array<string | undefined>>([undefined]);
+  const [reviewListLoading, setReviewListLoading] = useState(false);
   const [dialogGroup, setDialogGroup] = useState<ReviewSummaryGroup | null>(null);
   const [acknowledged, setAcknowledged] = useState(false);
   const [confirmation, setConfirmation] = useState("");
   const [activeOperation, setActiveOperation] = useState<ActiveReviewOperation | null>(null);
   const [busyOperationId, setBusyOperationId] = useState("");
-
-  const expireSession = useCallback(() => {
-    clearSession();
-    setSessionExpired(true);
-    onSessionExpired();
-  }, [onSessionExpired]);
 
   const loadSummary = useCallback(async () => {
     setLoading(true);
@@ -78,44 +80,113 @@ export function AdminPanel({ session, onOpenLogin, onSessionExpired }: AdminPane
       const response = await getReviewSummary();
       setGroups(response.groups);
       setUnclassifiedCount(response.unclassifiedCount);
+      setAccessRequired(false);
+      setAccessInput("");
     } catch (caught) {
-      if (isApiError(caught, 401)) {
-        expireSession();
+      if (isApiError(caught, 401) || isApiError(caught, 403)) {
+        clearPilotAdminAccess();
+        setAccessRequired(true);
+        setError(caught.message);
         return;
       }
       setError(caught instanceof Error ? caught.message : "검수 집계를 불러오지 못했습니다.");
     } finally {
       setLoading(false);
     }
-  }, [expireSession]);
+  }, []);
 
   useEffect(() => {
-    if (!session?.isAdmin) return;
     let active = true;
     queueMicrotask(() => {
       if (!active) return;
-      setSessionExpired(false);
       setActiveOperation(getActiveReviewOperation());
       void loadSummary();
     });
     return () => {
       active = false;
     };
-  }, [loadSummary, session]);
+  }, [loadSummary]);
 
   useEffect(() => {
-    if (!dialogGroup) return;
+    if (!dialogGroup && !reviewListGroup) return;
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !busyOperationId) setDialogGroup(null);
+      if (event.key !== "Escape" || busyOperationId) return;
+      setDialogGroup(null);
+      setReviewListGroup(null);
+      setReviewPage(null);
     };
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [busyOperationId, dialogGroup]);
+  }, [busyOperationId, dialogGroup, reviewListGroup]);
 
   const totalPending = useMemo(
     () => unclassifiedCount + groups.reduce((total, group) => total + group.count, 0),
     [groups, unclassifiedCount]
   );
+
+  async function unlockAdmin(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!accessInput.trim()) return;
+    setPilotAdminAccess(accessInput);
+    await loadSummary();
+  }
+
+  async function loadReviewListPage(
+    group: ReviewSummaryGroup,
+    cursor: string | undefined,
+    pageIndex: number,
+    cursors: Array<string | undefined>,
+  ) {
+    setReviewListLoading(true);
+    setError("");
+    try {
+      const page = await getReviewBatchPage(group.batchId, cursor);
+      setReviewPage(page);
+      setReviewPageIndex(pageIndex);
+      setReviewPageCursors(cursors);
+    } catch (caught) {
+      if (isApiError(caught, 401) || isApiError(caught, 403)) {
+        clearPilotAdminAccess();
+        setAccessRequired(true);
+        setReviewListGroup(null);
+      }
+      setError(caught instanceof Error ? caught.message : "전체 검수 목록을 불러오지 못했습니다.");
+    } finally {
+      setReviewListLoading(false);
+    }
+  }
+
+  function openReviewList(group: ReviewSummaryGroup) {
+    const cursors = [undefined];
+    setReviewListGroup(group);
+    setReviewPage(null);
+    setReviewPageIndex(0);
+    setReviewPageCursors(cursors);
+    void loadReviewListPage(group, undefined, 0, cursors);
+  }
+
+  function closeReviewList() {
+    setReviewListGroup(null);
+    setReviewPage(null);
+  }
+
+  function previousReviewPage() {
+    if (!reviewListGroup || reviewPageIndex <= 0) return;
+    const previousIndex = reviewPageIndex - 1;
+    void loadReviewListPage(
+      reviewListGroup,
+      reviewPageCursors[previousIndex],
+      previousIndex,
+      reviewPageCursors,
+    );
+  }
+
+  function nextReviewPage() {
+    if (!reviewListGroup || !reviewPage?.nextCursor) return;
+    const nextIndex = reviewPageIndex + 1;
+    const cursors = [...reviewPageCursors.slice(0, nextIndex), reviewPage.nextCursor];
+    void loadReviewListPage(reviewListGroup, reviewPage.nextCursor, nextIndex, cursors);
+  }
 
   function openConfirmation(group: ReviewSummaryGroup) {
     setDialogGroup(group);
@@ -162,8 +233,10 @@ export function AdminPanel({ session, onOpenLogin, onSessionExpired }: AdminPane
         }
       }
     } catch (caught) {
-      if (isApiError(caught, 401)) {
-        expireSession();
+      if (isApiError(caught, 401) || isApiError(caught, 403)) {
+        clearPilotAdminAccess();
+        setAccessRequired(true);
+        setError(caught.message);
         return;
       }
       if (caught instanceof ApiError && caught.status === 409) {
@@ -206,19 +279,22 @@ export function AdminPanel({ session, onOpenLogin, onSessionExpired }: AdminPane
     await runOperation(operation);
   }
 
-  if (!session?.isAdmin) {
+  if (accessRequired) {
     return (
       <section className="admin-gate" aria-labelledby="admin-title">
         <div className="admin-gate__symbol" aria-hidden="true">검수</div>
-        <span className="eyebrow">소유자 전용</span>
+        <span className="eyebrow">파일럿 소유자 전용</span>
         <h2 id="admin-title">혜택 변경 검수함</h2>
-        {sessionExpired ? (
-          <p className="form-error" role="alert">보안을 위해 로그인 시간이 만료되었습니다. 이메일 인증 후 진행 중 작업을 이어갈 수 있습니다.</p>
-        ) : (
-          <p>삭제·할인율·대상·증빙처럼 중요한 변경은 게시 전에 소유자가 직접 확인합니다.</p>
-        )}
-        <button className="primary-button" type="button" onClick={onOpenLogin}>이메일로 소유자 확인</button>
-        <small>로컬 데모에서는 owner@example.com과 인증번호 123456을 사용하세요.</small>
+        <p>이메일 OTP 대신 공유 앱 주소와 분리된 관리자 암호를 사용합니다.</p>
+        {error ? <p className="form-error" role="alert">{error}</p> : null}
+        <form onSubmit={unlockAdmin}>
+          <label className="review-confirmation" htmlFor="pilot-admin-access">
+            <span>관리자 암호</span>
+            <input id="pilot-admin-access" type="password" autoFocus autoComplete="current-password" value={accessInput} onChange={(event) => setAccessInput(event.target.value)} />
+          </label>
+          <button className="primary-button" type="submit" disabled={loading || !accessInput.trim()}>{loading ? "확인 중…" : "검수함 열기"}</button>
+        </form>
+        <small>암호는 현재 브라우저 탭에만 보관됩니다. 일반 사용자에게 전달하지 마세요.</small>
       </section>
     );
   }
@@ -233,6 +309,11 @@ export function AdminPanel({ session, onOpenLogin, onSessionExpired }: AdminPane
         <button className="secondary-button" type="button" disabled={loading || Boolean(busyOperationId)} onClick={() => void loadSummary()}>
           {loading ? "집계 확인 중…" : "집계 새로고침"}
         </button>
+      </div>
+
+      <div className="admin-rule" role="note">
+        <strong>파일럿 관리자 암호 사용 중</strong>
+        <span>이메일 OTP 없이 현재 탭에서만 검수 권한을 유지합니다. 공유 앱 주소와 관리자 암호를 함께 전달하지 마세요.</span>
       </div>
 
       <div className="admin-rule admin-rule--locked" role="note">
@@ -324,7 +405,7 @@ export function AdminPanel({ session, onOpenLogin, onSessionExpired }: AdminPane
                                 <small>{benefit?.provider ?? "제공기관 미상"}</small>
                               </div>
                               {benefit?.source.url ? (
-                                <a href={benefit.source.url} target="_blank" rel="noreferrer" aria-label={`${benefit.title} 공식 원문 새 창에서 확인`}>
+                                <a href={reviewSourceUrl(benefit)} target="_blank" rel="noreferrer" aria-label={`${benefit.title} 공식 원문 새 창에서 확인`}>
                                   원문 ↗
                                 </a>
                               ) : <span>원문 없음</span>}
@@ -332,6 +413,14 @@ export function AdminPanel({ session, onOpenLogin, onSessionExpired }: AdminPane
                           );
                         })}
                       </div>
+
+                      <button
+                        className="secondary-button review-batch__view-all"
+                        type="button"
+                        onClick={() => openReviewList(group)}
+                      >
+                        전체 {group.count.toLocaleString("ko-KR")}건 검토
+                      </button>
 
                       {group.eligible ? (
                         <button
@@ -358,6 +447,60 @@ export function AdminPanel({ session, onOpenLogin, onSessionExpired }: AdminPane
           );
         })}
       </div>
+
+      {reviewListGroup ? (
+        <div className="review-dialog-backdrop">
+          <section
+            className="review-dialog review-list-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="review-list-title"
+            aria-describedby="review-list-description"
+          >
+            <button className="review-dialog__close" type="button" aria-label="전체 검수 목록 닫기" onClick={closeReviewList}>×</button>
+            <span className="eyebrow">100건씩 전체 확인</span>
+            <h3 id="review-list-title">{reviewListGroup.label} 전체 검수</h3>
+            <p id="review-list-description">표본 5건에 한정하지 않고 승인 대상 전체를 확인합니다. 원문은 새 창에서 열립니다.</p>
+
+            {reviewListLoading && !reviewPage ? <p className="review-list__status" role="status">목록을 불러오는 중…</p> : null}
+            {reviewPage ? (
+              <>
+                <div className="review-list__range" aria-live="polite">
+                  <strong>
+                    {(reviewPageIndex * 100 + 1).toLocaleString("ko-KR")}–
+                    {(reviewPageIndex * 100 + reviewPage.items.length).toLocaleString("ko-KR")}
+                  </strong>
+                  <span>/ {reviewPage.total.toLocaleString("ko-KR")}건</span>
+                </div>
+                <div className="review-list" role="list" aria-busy={reviewListLoading}>
+                  {reviewPage.items.map((change) => {
+                    const benefit = currentBenefit(change);
+                    return (
+                      <article key={change.id} role="listitem">
+                        <div>
+                          <span>{change.action === "ADD" ? "신규" : change.action === "UPDATE" ? "수정" : "삭제"}</span>
+                          <strong>{benefit?.title ?? change.benefitId}</strong>
+                          <small>{benefit?.provider ?? "제공기관 미상"}</small>
+                        </div>
+                        {benefit?.source.url ? (
+                          <a href={reviewSourceUrl(benefit)} target="_blank" rel="noreferrer" aria-label={`${benefit.title} 공식 원문 새 창에서 확인`}>
+                            원문 ↗
+                          </a>
+                        ) : <span>원문 없음</span>}
+                      </article>
+                    );
+                  })}
+                </div>
+                <nav className="review-list__pagination" aria-label="전체 검수 목록 페이지">
+                  <button className="secondary-button" type="button" disabled={reviewListLoading || reviewPageIndex === 0} onClick={previousReviewPage}>이전 100건</button>
+                  <span>{reviewPageIndex + 1}페이지</span>
+                  <button className="secondary-button" type="button" disabled={reviewListLoading || !reviewPage.nextCursor} onClick={nextReviewPage}>다음 100건</button>
+                </nav>
+              </>
+            ) : null}
+          </section>
+        </div>
+      ) : null}
 
       {dialogGroup ? (
         <div className="review-dialog-backdrop">
