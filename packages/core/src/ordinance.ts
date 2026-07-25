@@ -104,6 +104,26 @@ export function parseMatchingArticles(input: string): string[] {
   return [...new Set(values.filter((value) => value.includes("병역명문가")))];
 }
 
+export function publicOrdinanceUrl(rawUrl: string, id: string, title: string): string {
+  const decoded = rawUrl.replace(/&amp;/gi, "&").trim();
+  try {
+    const parsed = new URL(decoded, "https://www.law.go.kr");
+    if (parsed.hostname === "law.go.kr" || parsed.hostname === "www.law.go.kr") {
+      const sequence = [...parsed.searchParams.entries()]
+        .find(([key]) => key.toLocaleLowerCase("en-US") === "mst" || key.toLocaleLowerCase("en-US") === "ordinseq")?.[1]
+        ?.trim();
+      if (sequence && /^\d+$/.test(sequence)) {
+        return `https://www.law.go.kr/LSW/ordinInfoP.do?ordinSeq=${encodeURIComponent(sequence)}`;
+      }
+    }
+  } catch {
+    // Fall through to the public search page. API URLs and credentials are never retained.
+  }
+
+  const query = title.trim() || id.trim();
+  return `https://www.law.go.kr/LSW/lsSc.do?query=${encodeURIComponent(query)}`;
+}
+
 export function normalizeOrdinance(record: OrdinanceRecord, retrievedAt: string): Benefit {
   const summary = record.matchingArticles[0] || UNKNOWN_OFFICIAL_DETAIL;
   return {
@@ -132,6 +152,19 @@ export function normalizeOrdinance(record: OrdinanceRecord, retrievedAt: string)
     reviewState: "SOURCE_ONLY",
     updatedAt: record.updatedAt || record.promulgatedAt || retrievedAt,
     searchText: `${record.title} ${record.localGovernment} ${summary} 병역명문가 조례`.toLocaleLowerCase("ko-KR"),
+  };
+}
+
+export function withPublicOrdinanceUrls(benefit: Benefit): Benefit {
+  if (benefit.type !== "ORDINANCE") return benefit;
+  const sourceUrl = publicOrdinanceUrl(benefit.source.url, benefit.source.id, benefit.title);
+  return {
+    ...benefit,
+    source: { ...benefit.source, url: sourceUrl },
+    evidence: benefit.evidence.map((item) => ({
+      ...item,
+      sourceUrl: publicOrdinanceUrl(item.sourceUrl, item.sourceId, benefit.title),
+    })),
   };
 }
 
@@ -176,8 +209,13 @@ function normalizeOrdinanceRow(row: Record<string, unknown>): OrdinanceRecord | 
   const title = pick(row, "자치법규명", "ordinNm", "법규명", "title");
   if (!id || !title) return undefined;
   const localGovernment = pick(row, "지자체기관명", "자치단체명", "orgName", "localGovernment");
-  const url = pick(row, "자치법규상세링크", "법령상세링크", "url")
-    || `https://www.law.go.kr/자치법규/${encodeURIComponent(title)}/(${encodeURIComponent(id)})`;
+  const rawUrl = pick(row, "자치법규상세링크", "법령상세링크", "url");
+  const sequence = pick(row, "자치법규일련번호", "ordinSeq", "MST");
+  const url = publicOrdinanceUrl(
+    rawUrl || (sequence ? `/LSW/ordinInfoP.do?ordinSeq=${encodeURIComponent(sequence)}` : ""),
+    id,
+    title,
+  );
   const optional = (key: string, ...aliases: string[]): string => pick(row, key, ...aliases);
   const promulgatedAt = normalizeLawDate(optional("공포일자", "promulgatedAt"));
   const effectiveAt = normalizeLawDate(optional("시행일자", "effectiveAt"));

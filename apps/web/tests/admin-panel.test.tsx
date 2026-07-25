@@ -4,32 +4,18 @@ import { AdminPanel } from "../components/admin-panel";
 import {
   getReviewSummary,
   saveActiveReviewOperation,
-  type ActiveReviewOperation,
-  type AuthSession
+  type ActiveReviewOperation
 } from "../lib/api";
-
-const ownerSession: AuthSession = {
-  accessToken: "mock-access-token",
-  idToken: "mock-id-token",
-  userId: "mock:owner@example.com",
-  email: "owner@example.com",
-  isAdmin: true
-};
 
 describe("AdminPanel", () => {
   beforeEach(() => {
     localStorage.clear();
+    sessionStorage.clear();
   });
 
   it("shows source summaries and requires both acknowledgements before bulk approval", async () => {
     const user = userEvent.setup();
-    render(
-      <AdminPanel
-        session={ownerSession}
-        onOpenLogin={vi.fn()}
-        onSessionExpired={vi.fn()}
-      />
-    );
+    render(<AdminPanel />);
 
     expect(await screen.findByRole("heading", { name: "병무청 예우시설" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "병무청 전국 혜택 공지" })).toBeInTheDocument();
@@ -74,15 +60,22 @@ describe("AdminPanel", () => {
     };
     saveActiveReviewOperation(operation);
 
-    render(
-      <AdminPanel
-        session={ownerSession}
-        onOpenLogin={vi.fn()}
-        onSessionExpired={vi.fn()}
-      />
-    );
+    render(<AdminPanel />);
 
     expect(await screen.findByRole("button", { name: "같은 작업으로 계속" })).toBeInTheDocument();
     expect(screen.getByText("작업 UUID 유지")).toBeInTheDocument();
+  });
+
+  it("opens the complete review list instead of limiting the owner to five samples", async () => {
+    const user = userEvent.setup();
+    render(<AdminPanel />);
+
+    expect(await screen.findByRole("heading", { name: "병무청 예우시설" })).toBeInTheDocument();
+    await user.click(screen.getAllByRole("button", { name: "전체 1건 검토" })[0]!);
+
+    const dialog = await screen.findByRole("dialog", { name: "병무청 예우시설 전체 검수" });
+    expect(within(dialog).getByText("1페이지")).toBeInTheDocument();
+    expect(within(dialog).getByText("/ 1건")).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "다음 100건" })).toBeDisabled();
   });
 });

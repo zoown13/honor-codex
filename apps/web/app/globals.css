@@ -1862,6 +1862,20 @@ a {
   font-size: 12px;
 }
 
+.admin-gate form {
+  display: grid;
+  width: min(100%, 360px);
+  gap: 10px;
+}
+
+.admin-gate .review-confirmation {
+  text-align: left;
+}
+
+.admin-gate .primary-button {
+  min-height: 44px;
+}
+
 .admin-gate small {
   margin-top: 12px;
   color: var(--soft-muted);
@@ -2089,6 +2103,17 @@ a {
   text-decoration: none;
 }
 
+.review-batch__view-all {
+  width: 100%;
+  min-height: 44px;
+  margin-top: 13px;
+  border-radius: 9px;
+}
+
+.review-batch__view-all + .review-batch__approve {
+  margin-top: 8px;
+}
+
 .review-batch__approve {
   width: 100%;
   min-height: 44px;
@@ -2238,6 +2263,106 @@ a {
   margin: 0 0 17px;
   color: var(--muted);
   font-size: 13px;
+}
+
+.review-list-dialog {
+  width: min(100%, 760px);
+}
+
+.review-list__status {
+  padding: 32px 12px;
+  text-align: center;
+}
+
+.review-list__range {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  margin-bottom: 9px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.review-list__range strong {
+  color: var(--ink);
+  font-size: 14px;
+}
+
+.review-list {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+}
+
+.review-list article {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 56px;
+  padding: 9px 10px;
+}
+
+.review-list article + article {
+  border-top: 1px solid var(--line);
+}
+
+.review-list article > div {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 1px 7px;
+  align-items: center;
+}
+
+.review-list article > div > span {
+  grid-row: 1 / 3;
+  padding: 3px 5px;
+  color: var(--green-800);
+  background: var(--green-50);
+  border-radius: 5px;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.review-list article strong,
+.review-list article small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.review-list article strong {
+  font-size: 12px;
+}
+
+.review-list article small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.review-list article > a,
+.review-list article > span {
+  flex: 0 0 auto;
+  min-height: 44px;
+  padding: 13px 6px;
+  font-size: 12px;
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.review-list__pagination {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.review-list__pagination span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
 }
 
 .review-dialog form {

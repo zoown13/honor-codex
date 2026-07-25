@@ -93,15 +93,12 @@ test("owner can explicitly approve one source batch without starting publish", a
 
   await page.goto("./");
   await page.getByRole("button", { name: "소유자 검수" }).click();
-  await page.getByRole("button", { name: "이메일로 소유자 확인" }).click();
-  await page.getByLabel("알림 받을 이메일").fill("owner@example.com");
-  await page.getByRole("button", { name: "인증번호 받기" }).click();
-  await page.getByLabel("이메일 인증번호").fill("123456");
-  await page.getByRole("button", { name: "확인", exact: true }).click();
-
-  await page.getByRole("button", { name: "소유자 검수" }).click();
   await expect(page.getByRole("heading", { name: "병무청 예우시설" })).toBeVisible();
   await expect(page.getByText("승인과 게시는 분리되어 있습니다")).toBeVisible();
+  await page.getByRole("button", { name: "전체 1건 검토" }).first().click();
+  const fullReview = page.getByRole("dialog", { name: "병무청 예우시설 전체 검수" });
+  await expect(fullReview.getByText("/ 1건")).toBeVisible();
+  await fullReview.getByRole("button", { name: "전체 검수 목록 닫기" }).click();
   await page.getByRole("button", { name: "병무청 예우시설 1건 일괄 승인" }).click();
 
   const dialog = page.getByRole("dialog", { name: "병무청 예우시설 1건 승인" });

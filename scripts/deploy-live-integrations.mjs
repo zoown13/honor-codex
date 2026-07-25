@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { readFileSync, statSync } from "node:fs";
+import { readFileSync, rmSync, statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
@@ -18,7 +18,7 @@ const sourceUrlParameters = {
 const cliArgs = process.argv.slice(2);
 if (cliArgs[0] === "--") cliArgs.shift();
 const [mode, source, extraArgument] = cliArgs;
-const supportedModes = new Set(["gate-off", "configure", "gate-on", "publish-on", "publish-off"]);
+const supportedModes = new Set(["gate-off", "configure", "admin-passcode", "gate-on", "publish-on", "publish-off"]);
 const scheduleParameters = {
   facilities: "FacilitiesIngestionScheduleEnabled",
   notices: "NoticesIngestionScheduleEnabled",
@@ -29,11 +29,11 @@ const publishMode = mode === "publish-on" || mode === "publish-off";
 if (extraArgument !== undefined ||
     !supportedModes.has(mode) ||
     (mode === "gate-on" && !(source in scheduleParameters)) ||
-    ((mode === "configure" || publishMode) && source !== undefined) ||
+    ((mode === "configure" || mode === "admin-passcode" || publishMode) && source !== undefined) ||
     (mode === "gate-off" && source !== undefined && !(source in scheduleParameters))) {
   fail([
     "Usage: pnpm deploy:live -- <gate-off [facilities|notices|ordinances]",
-    "|configure|gate-on <facilities|notices|ordinances>|publish-on|publish-off>",
+    "|configure|admin-passcode|gate-on <facilities|notices|ordinances>|publish-on|publish-off>",
   ].join(" "));
 }
 
@@ -52,15 +52,29 @@ if (mode === "publish-on") {
     parameters.push(`HonorBenefitsPilotStack:${parameter}=false`);
   }
   parameters.push("HonorBenefitsPilotStack:PublishEnabled=false");
-} else {
+} else if (mode !== "admin-passcode") {
   const parameter = scheduleParameters[source];
   parameters.push(`HonorBenefitsPilotStack:${parameter}=${mode === "gate-on" ? "true" : "false"}`);
+}
+
+if (mode === "admin-passcode") {
+  const env = parseEnv(await readFile(configPath, "utf8"));
+  const pilotAdminToken = required(env, "PILOT_ADMIN_TOKEN");
+  if (!/^[A-Za-z0-9_-]{22,}$/.test(pilotAdminToken)) {
+    fail("PILOT_ADMIN_TOKEN must be 22+ URL-safe characters in .env.deploy.local");
+  }
+  assertSecretsAreNotTracked([pilotAdminToken]);
+  parameters.push(`HonorBenefitsPilotStack:PilotAdminToken=${pilotAdminToken}`);
 }
 
 if (mode === "configure") {
   const env = parseEnv(await readFile(configPath, "utf8"));
   const kakaoKey = required(env, "NEXT_PUBLIC_KAKAO_MAP_APP_KEY");
   const lawOc = required(env, "LAW_API_OC");
+  const pilotAdminToken = required(env, "PILOT_ADMIN_TOKEN");
+  if (!/^[A-Za-z0-9_-]{22,}$/.test(pilotAdminToken)) {
+    fail("PILOT_ADMIN_TOKEN must be 22+ URL-safe characters in .env.deploy.local");
+  }
   for (const [parameter, { envKey, defaultValue }] of Object.entries(sourceUrlParameters)) {
     const value = env[envKey]?.trim() || defaultValue;
     let parsed;
@@ -73,27 +87,27 @@ if (mode === "configure") {
   if (env.MMA_LIVE_INGESTION_ENABLED?.trim().toLowerCase() !== "true") {
     fail("MMA_LIVE_INGESTION_ENABLED must be true in .env.deploy.local");
   }
-  assertSecretsAreNotTracked([kakaoKey, lawOc]);
+  assertSecretsAreNotTracked([kakaoKey, lawOc, pilotAdminToken]);
   parameters.push(
     `HonorBenefitsPilotStack:KakaoJavascriptKey=${kakaoKey}`,
     `HonorBenefitsPilotStack:LawApiOc=${lawOc}`,
+    `HonorBenefitsPilotStack:PilotAdminToken=${pilotAdminToken}`,
     "HonorBenefitsPilotStack:MmaLiveIngestionEnabled=true"
   );
 }
 
-const npmExecPath = process.env.npm_execpath;
-if (!npmExecPath) fail("Run this script through the pnpm deploy:live command.");
+rmSync(path.join(root, "infra", "cdk.out"), { recursive: true, force: true });
 
 const operation = source ? `${mode}:${source}` : mode;
 process.stdout.write(`Starting secret-redacted live integration deployment: ${operation}\n`);
+const cdkCliPath = path.join(root, "infra", "node_modules", "aws-cdk", "bin", "cdk");
+const cdkAppCommand = `${JSON.stringify(process.execPath)} node_modules/tsx/dist/cli.mjs bin/honor-benefits-pilot.ts`;
 const args = [
-  npmExecPath,
-  "--filter",
-  "@honor/infra",
-  "exec",
-  "cdk",
+  cdkCliPath,
   "deploy",
   "HonorBenefitsPilotStack",
+  "--app",
+  cdkAppCommand,
   "--profile",
   "honor-pilot-deployer",
   "--require-approval",
@@ -105,10 +119,20 @@ const args = [
 ];
 for (const parameter of parameters) args.push("--parameters", parameter);
 
+const childEnv = Object.fromEntries(
+  Object.entries(process.env).filter(([key]) => key.toLowerCase() !== "path")
+);
+childEnv.PATH = [
+  path.dirname(process.execPath),
+  process.env.APPDATA ? path.join(process.env.APPDATA, "npm") : undefined,
+  path.join(root, "infra", "node_modules", ".bin"),
+  process.env.PATH
+].filter(Boolean).join(path.delimiter);
+
 const result = spawnSync(process.execPath, args, {
-  cwd: root,
+  cwd: path.join(root, "infra"),
   env: {
-    ...process.env,
+    ...childEnv,
     AWS_PROFILE: "honor-pilot-deployer",
     AWS_REGION: "ap-northeast-2",
     AWS_DEFAULT_REGION: "ap-northeast-2"

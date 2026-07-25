@@ -268,14 +268,19 @@ export function httpEvent(
   path: string,
   method: string,
   body?: Record<string, unknown>,
-  options: { query?: Record<string, string>; pathParameters?: Record<string, string>; groups?: string[] } = {},
+  options: {
+    query?: Record<string, string>;
+    pathParameters?: Record<string, string>;
+    groups?: string[];
+    headers?: Record<string, string>;
+  } = {},
 ): HttpEvent {
   return {
     version: "2.0",
     routeKey: `${method} ${path}`,
     rawPath: path,
     rawQueryString: "",
-    headers: {},
+    headers: options.headers ?? {},
     requestContext: {
       accountId: "test", apiId: "test", domainName: "test", domainPrefix: "test", requestId: "test",
       routeKey: `${method} ${path}`, stage: "$default", time: "", timeEpoch: 0,

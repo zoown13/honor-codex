@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { normalizeMmaFacility } from "@honor/core";
+import { normalizeMmaFacility, normalizeOrdinance } from "@honor/core";
 import type { BenefitChange, OrdinanceRecord, OrdinanceSearchPage } from "@honor/core";
 import { createAdminReviewsHandler } from "../src/handlers/admin-reviews.js";
 import { createAuthOtpHandler } from "../src/handlers/auth-otp.js";
@@ -161,11 +161,58 @@ describe("authenticated APIs", () => {
     expect((await handler(event)).statusCode).toBe(200);
     expect((await handler(event)).statusCode).toBe(409);
   });
+
+  it("requires the separate passcode only on pilot owner-review routes", async () => {
+    const token = "test-pilot-admin-token-123";
+    const repository = new FakeRepository();
+    const ordinance = normalizeOrdinance({
+      id: "2112343",
+      title: "테스트 병역명문가 조례",
+      localGovernment: "서울특별시",
+      url: "/DRF/lawService.do?OC=fake-secret&target=ordin&MST=2112343&type=HTML",
+      matchingArticles: [],
+    }, baselineDetectedAt);
+    repository.changes.push({
+      id: "chg:ord-2112343",
+      benefitId: ordinance.id,
+      action: "ADD",
+      risk: "HIGH",
+      status: "PENDING",
+      changedFields: ["created"],
+      after: ordinance,
+      detectedAt: baselineDetectedAt,
+    });
+    const handler = createAdminReviewsHandler(
+      { repository, clock: fixedClock },
+      { ADMIN_EMAILS: "pilot@example.com", PILOT_ADMIN_TOKEN: token },
+    );
+    const path = "/v1/pilot-admin/review-batches";
+
+    expect((await handler(httpEvent(path, "GET"))).statusCode).toBe(401);
+    expect((await handler(httpEvent(path, "GET", undefined, {
+      headers: { "x-honor-pilot-admin": "wrong-pilot-admin-token" },
+    }))).statusCode).toBe(403);
+    const allowed = await handler(httpEvent(path, "GET", undefined, {
+      headers: { "X-Honor-Pilot-Admin": token },
+    }));
+    expect(allowed.statusCode).toBe(200);
+    expect(allowed.body).toContain("https://www.law.go.kr/LSW/ordinInfoP.do?ordinSeq=2112343");
+    expect(allowed.body).not.toContain("OC=");
+    expect(allowed.body).not.toContain("fake-secret");
+
+    const deniedLegacyHandler = createAdminReviewsHandler(
+      { repository: new FakeRepository(), clock: fixedClock },
+      { ADMIN_EMAILS: "different@example.com", PILOT_ADMIN_TOKEN: token },
+    );
+    expect((await deniedLegacyHandler(httpEvent("/v1/admin/review-batches", "GET", undefined, {
+      headers: { "x-honor-pilot-admin": token },
+    }))).statusCode).toBe(403);
+  });
 });
 
-  it("summarizes strict source batches and pages previews at no more than 25 items", async () => {
+  it("summarizes strict source batches and pages full reviews at no more than 100 items", async () => {
     const repo = new FakeRepository();
-    repo.changes.push(...Array.from({ length: 30 }, (_, index) => baselineFacilityChange(index)));
+    repo.changes.push(...Array.from({ length: 130 }, (_, index) => baselineFacilityChange(index)));
     const handler = createAdminReviewsHandler({ repository: repo, clock: fixedClock }, { ADMIN_EMAILS: "pilot@example.com" });
 
     const summaryResult = await handler(httpEvent("/v1/admin/review-batches", "GET"));
@@ -182,11 +229,11 @@ describe("authenticated APIs", () => {
     expect(summary.groups).toHaveLength(1);
     expect(summary.groups[0]).toMatchObject({
       source: "MMA_FACILITIES",
-      count: 30,
+      count: 130,
       eligible: true,
-      confirmationPhrase: "APPROVE MMA_FACILITIES 30",
-      actionCounts: { ADD: 30, UPDATE: 0, DELETE: 0 },
-      riskCounts: { LOW: 0, HIGH: 30 },
+      confirmationPhrase: "APPROVE MMA_FACILITIES 130",
+      actionCounts: { ADD: 130, UPDATE: 0, DELETE: 0 },
+      riskCounts: { LOW: 0, HIGH: 130 },
     });
     expect(summary.groups[0]?.batchId).toMatch(/^[0-9a-f]{64}$/);
     expect(summary.groups[0]?.batchId).toBe(summary.groups[0]?.fingerprint);
@@ -194,22 +241,22 @@ describe("authenticated APIs", () => {
 
     const batchId = summary.groups[0]?.batchId ?? "";
     const firstPage = await handler(httpEvent(`/v1/admin/review-batches/${batchId}`, "GET", undefined, {
-      pathParameters: { batchId }, query: { limit: "25" },
+      pathParameters: { batchId }, query: { limit: "100" },
     }));
     const firstPageBody = JSON.parse(firstPage.body ?? "{}") as {
       items: BenefitChange[]; total: number; nextCursor?: string;
     };
     expect(firstPage.statusCode).toBe(200);
-    expect(firstPageBody.items).toHaveLength(25);
-    expect(firstPageBody.total).toBe(30);
+    expect(firstPageBody.items).toHaveLength(100);
+    expect(firstPageBody.total).toBe(130);
     expect(firstPageBody.nextCursor).toBeTruthy();
 
     const secondPage = await handler(httpEvent(`/v1/admin/review-batches/${batchId}`, "GET", undefined, {
-      pathParameters: { batchId }, query: { limit: "25", cursor: firstPageBody.nextCursor ?? "" },
+      pathParameters: { batchId }, query: { limit: "100", cursor: firstPageBody.nextCursor ?? "" },
     }));
-    expect((JSON.parse(secondPage.body ?? "{}") as { items: BenefitChange[] }).items).toHaveLength(5);
+    expect((JSON.parse(secondPage.body ?? "{}") as { items: BenefitChange[] }).items).toHaveLength(30);
     const oversizedPage = await handler(httpEvent(`/v1/admin/review-batches/${batchId}`, "GET", undefined, {
-      pathParameters: { batchId }, query: { limit: "26" },
+      pathParameters: { batchId }, query: { limit: "101" },
     }));
     expect(oversizedPage.statusCode).toBe(400);
   });

@@ -4,7 +4,7 @@ import {
   normalizeMmaNotice,
   normalizeOrdinance,
 } from "@honor/core";
-import { createPublishHandler } from "../src/handlers/publish.js";
+import { applyChanges, createPublishHandler } from "../src/handlers/publish.js";
 import { DeploymentOutcomeUnknownError } from "../src/shared/contracts.js";
 import { FakeRepository, FakeStorage, httpEvent } from "./fakes.js";
 
@@ -50,6 +50,59 @@ function deployment(options: {
 }
 
 describe("publish success gate", () => {
+  it("removes law API credentials from previously stored ordinance links before publication", () => {
+    const unsafeUrl = "/DRF/lawService.do?OC=fake-secret&target=ordin&MST=2112343&type=HTML";
+    const unsafe = {
+      ...ordinanceBenefit,
+      source: { ...ordinanceBenefit.source, url: unsafeUrl },
+      evidence: ordinanceBenefit.evidence.map((item) => ({ ...item, sourceUrl: unsafeUrl })),
+    };
+    const [published] = applyChanges([], [{
+      id: "chg-ordinance",
+      benefitId: unsafe.id,
+      action: "ADD",
+      risk: "HIGH",
+      status: "APPROVED",
+      changedFields: ["created"],
+      after: unsafe,
+      detectedAt: now,
+    }]);
+
+    expect(published?.source.url).toBe("https://www.law.go.kr/LSW/ordinInfoP.do?ordinSeq=2112343");
+    expect(published?.evidence[0]?.sourceUrl).toBe("https://www.law.go.kr/LSW/ordinInfoP.do?ordinSeq=2112343");
+    expect(JSON.stringify(published)).not.toContain("OC=");
+    expect(JSON.stringify(published)).not.toContain("fake-secret");
+  });
+
+  it("uses the pilot admin passcode without weakening the publish safety gate", async () => {
+    const handler = createPublishHandler({
+      repository: new FakeRepository(),
+      storage: new FakeStorage(),
+      deployment: deployment(),
+      notifications: { immediate: vi.fn(async () => undefined) },
+      clock: { now: () => new Date(now) },
+    }, {
+      PILOT_ADMIN_TOKEN: "separate-pilot-admin-token",
+      PUBLISH_ENABLED: "false",
+    });
+    const path = "/v1/pilot-admin/publish";
+
+    const missing = await handler(httpEvent(path, "POST"));
+    const wrong = await handler(httpEvent(path, "POST", undefined, {
+      headers: { "x-honor-pilot-admin": "wrong-pilot-admin-token" },
+    }));
+    const accepted = await handler(httpEvent(path, "POST", undefined, {
+      headers: { "x-honor-pilot-admin": "separate-pilot-admin-token" },
+    }));
+
+    expect(missing.statusCode).toBe(401);
+    expect(wrong.statusCode).toBe(403);
+    expect(accepted.statusCode).toBe(503);
+    expect(JSON.parse(accepted.body)).toEqual({
+      error: "게시 기능이 현재 비활성화되어 있습니다.",
+    });
+  });
+
   it("fails closed before reading or writing publish state unless explicitly enabled", async () => {
     const repository = new FakeRepository();
     const storage = new FakeStorage();

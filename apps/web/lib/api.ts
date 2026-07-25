@@ -11,6 +11,7 @@ import { benefits } from "../data/sample-benefits";
 import { API_BASE_URL, IS_MOCK_API } from "./config";
 
 const SESSION_KEY = "honor-pilot-session";
+const PILOT_ADMIN_ACCESS_KEY = "honor-pilot-admin-access";
 const SUBSCRIPTIONS_KEY = "honor-pilot-subscriptions";
 const CHANGES_KEY = "honor-pilot-review-changes";
 const ACTIVE_REVIEW_OPERATION_KEY = "honor-pilot-active-review-operation";
@@ -63,6 +64,13 @@ export interface ReviewSummaryResponse {
   groups: ReviewSummaryGroup[];
   unclassifiedCount: number;
   generatedAt?: string;
+}
+
+export interface ReviewBatchPage {
+  batch: ReviewSummaryGroup;
+  items: BenefitChange[];
+  total: number;
+  nextCursor?: string;
 }
 
 export interface BulkReviewInput {
@@ -163,6 +171,35 @@ async function apiRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
 
   if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
+}
+
+function pilotAdminAccess() {
+  if (typeof window === "undefined" || typeof window.sessionStorage === "undefined") return "";
+  return window.sessionStorage.getItem(PILOT_ADMIN_ACCESS_KEY)?.trim() ?? "";
+}
+
+export function setPilotAdminAccess(value: string) {
+  if (typeof window !== "undefined" && typeof window.sessionStorage !== "undefined") {
+    window.sessionStorage.setItem(PILOT_ADMIN_ACCESS_KEY, value.trim());
+  }
+}
+
+export function clearPilotAdminAccess() {
+  if (typeof window !== "undefined" && typeof window.sessionStorage !== "undefined") {
+    window.sessionStorage.removeItem(PILOT_ADMIN_ACCESS_KEY);
+  }
+}
+
+async function pilotAdminRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const access = pilotAdminAccess();
+  if (!access) throw new ApiError(401, "관리자 암호를 입력해 주세요.");
+  return apiRequest<T>(path, {
+    ...init,
+    headers: {
+      "X-Honor-Pilot-Admin": access,
+      ...init.headers
+    }
+  });
 }
 
 export function getSession() {
@@ -382,8 +419,36 @@ function mockReviewSummary(): ReviewSummaryResponse {
 }
 
 export async function getReviewSummary(): Promise<ReviewSummaryResponse> {
-  if (!IS_MOCK_API) return apiRequest<ReviewSummaryResponse>("/v1/admin/review-batches");
+  if (!IS_MOCK_API) return pilotAdminRequest<ReviewSummaryResponse>("/v1/pilot-admin/review-batches");
   return mockReviewSummary();
+}
+
+export async function getReviewBatchPage(
+  batchId: string,
+  cursor?: string,
+  limit = 100,
+): Promise<ReviewBatchPage> {
+  if (!IS_MOCK_API) {
+    const query = new URLSearchParams({ limit: String(limit) });
+    if (cursor) query.set("cursor", cursor);
+    return pilotAdminRequest<ReviewBatchPage>(
+      `/v1/pilot-admin/review-batches/${encodeURIComponent(batchId)}?${query.toString()}`,
+    );
+  }
+
+  const batch = mockReviewSummary().groups.find((group) => group.batchId === batchId);
+  if (!batch) throw new ApiError(404, "검수 배치를 찾을 수 없습니다.");
+  const changes = storedChanges()
+    .filter((change) => change.status === "PENDING"
+      && reviewSource(change) === batch.source
+      && change.detectedAt === batch.detectedAt)
+    .sort((left, right) => left.id.localeCompare(right.id));
+  const cursorIndex = cursor === undefined ? -1 : changes.findIndex((change) => change.id === cursor);
+  if (cursor !== undefined && cursorIndex < 0) throw new ApiError(400, "cursor가 현재 검수 배치에 없습니다.");
+  const offset = cursorIndex + 1;
+  const items = changes.slice(offset, offset + limit);
+  const nextCursor = offset + items.length < changes.length ? items.at(-1)?.id : undefined;
+  return { batch, items, total: changes.length, ...(nextCursor ? { nextCursor } : {}) };
 }
 
 interface MockReviewOperation {
@@ -394,7 +459,7 @@ interface MockReviewOperation {
 
 export async function approveReviewChunk(input: BulkReviewInput): Promise<BulkReviewProgress> {
   if (!IS_MOCK_API) {
-    return apiRequest<BulkReviewProgress>(`/v1/admin/review-batches/${encodeURIComponent(input.batchId)}/approve`, {
+    return pilotAdminRequest<BulkReviewProgress>(`/v1/pilot-admin/review-batches/${encodeURIComponent(input.batchId)}/approve`, {
       method: "POST",
       body: JSON.stringify(input)
     });
@@ -482,8 +547,8 @@ export function clearActiveReviewOperation() {
 
 export async function listPendingChanges(): Promise<BenefitChange[]> {
   if (!IS_MOCK_API) {
-    const response = await apiRequest<BenefitChange[] | { items: BenefitChange[] }>(
-      "/v1/admin/reviews?status=PENDING&limit=25"
+    const response = await pilotAdminRequest<BenefitChange[] | { items: BenefitChange[] }>(
+      "/v1/pilot-admin/reviews?status=PENDING&limit=100"
     );
     return Array.isArray(response) ? response : response.items;
   }
@@ -492,7 +557,7 @@ export async function listPendingChanges(): Promise<BenefitChange[]> {
 
 export async function reviewChange(id: string, decision: "approve" | "reject") {
   if (!IS_MOCK_API) {
-    return apiRequest<BenefitChange>(`/v1/admin/reviews/${encodeURIComponent(id)}`, {
+    return pilotAdminRequest<BenefitChange>(`/v1/pilot-admin/reviews/${encodeURIComponent(id)}`, {
       method: "POST",
       body: JSON.stringify({ decision: decision === "approve" ? "APPROVED" : "REJECTED" })
     });

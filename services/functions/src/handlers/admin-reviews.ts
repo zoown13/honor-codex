@@ -1,4 +1,4 @@
-import { sha256Hex } from "@honor/core";
+import { sha256Hex, withPublicOrdinanceUrls } from "@honor/core";
 import type { BenefitChange, BenefitChangeSource, ChangeStatus } from "@honor/core";
 import { BulkReviewConflictError } from "../shared/contracts.js";
 import type {
@@ -13,6 +13,7 @@ import {
   method,
   parseBody,
   requireAdmin,
+  requirePilotAdmin,
   withHttpErrors,
 } from "../shared/http.js";
 import { inferReviewSource } from "../shared/ingestion.js";
@@ -25,7 +26,7 @@ const SOURCE_LABELS: Readonly<Record<BenefitChangeSource, string>> = {
   MMA_NOTICES: "병무청 전국 혜택 공지",
   LAW_ORDINANCES: "법제처 지자체 조례",
 };
-const MAX_PAGE_SIZE = 25;
+const MAX_PAGE_SIZE = 100;
 const MAX_BULK_COUNT = 2_500;
 const MAX_BULK_CHUNK = 100;
 const BULK_REVIEW_REASON = "INITIAL_BASELINE_BULK_APPROVAL";
@@ -37,9 +38,12 @@ export function createAdminReviewsHandler(
   env: NodeJS.ProcessEnv = process.env,
 ) {
   return (event: HttpEvent): Promise<HttpResult> => withHttpErrors(async () => {
-    const admin = requireAdmin(event, env);
+    const pilotPath = event.rawPath.startsWith("/v1/pilot-admin/");
+    const admin = pilotPath ? requirePilotAdmin(event, env) : requireAdmin(event, env);
+    const reviewBatchPath = event.rawPath.startsWith("/v1/admin/review-batches")
+      || event.rawPath.startsWith("/v1/pilot-admin/review-batches");
     if (method(event) === "GET") {
-      if (event.rawPath.startsWith("/v1/admin/review-batches")) {
+      if (reviewBatchPath) {
         const allChanges = await deps.repository.listChanges();
         const pending = allChanges.filter((change) => change.status === "PENDING");
         const groups = summarizePendingGroups(allChanges);
@@ -58,7 +62,7 @@ export function createAdminReviewsHandler(
           const offset = cursorIndex + 1;
           const items = changes.slice(offset, offset + limit);
           const nextCursor = offset + items.length < changes.length ? items.at(-1)?.id : undefined;
-          return json(200, { batch, items, total: changes.length, ...(nextCursor ? { nextCursor } : {}) });
+          return json(200, { batch, items: items.map(sanitizeReviewChange), total: changes.length, ...(nextCursor ? { nextCursor } : {}) });
         }
         return json(200, {
           groups,
@@ -77,12 +81,12 @@ export function createAdminReviewsHandler(
       const offset = cursorIndex + 1;
       const items = sorted.slice(offset, offset + limit);
       const nextCursor = offset + items.length < sorted.length ? items.at(-1)?.id : undefined;
-      return json(200, { items, total: sorted.length, ...(nextCursor ? { nextCursor } : {}) });
+      return json(200, { items: items.map(sanitizeReviewChange), total: sorted.length, ...(nextCursor ? { nextCursor } : {}) });
     }
 
     if (method(event) === "POST") {
       const body = event.body ? parseBody(event) : {};
-      if (event.rawPath.startsWith("/v1/admin/review-batches")) {
+      if (reviewBatchPath) {
         if (!event.rawPath.endsWith("/approve")) throw new HttpError(405, "허용되지 않은 요청입니다.");
         const batchId = event.pathParameters?.batchId;
         if (!batchId) throw new HttpError(400, "batchId가 필요합니다.");
@@ -104,7 +108,7 @@ export function createAdminReviewsHandler(
           admin.email,
           (deps.clock ?? systemClock).now().toISOString(),
         );
-        return json(200, reviewed);
+        return json(200, sanitizeReviewChange(reviewed));
       } catch (error) {
         if (error instanceof Error && error.message.includes("no longer pending")) {
           throw new HttpError(409, "이미 처리되었거나 찾을 수 없는 변경입니다.");
@@ -195,7 +199,7 @@ export function summarizePendingGroups(changes: readonly BenefitChange[]): Revie
         LOW: sorted.filter((change) => change.risk === "LOW").length,
         HIGH: sorted.filter((change) => change.risk === "HIGH").length,
       },
-      samples: sorted.slice(0, 5),
+      samples: sorted.slice(0, 5).map(sanitizeReviewChange),
     };
   }).sort((a, b) => b.detectedAt.localeCompare(a.detectedAt) || a.source.localeCompare(b.source));
 }
@@ -346,6 +350,14 @@ function isEligibleBaselineChange(
     && change.after !== undefined
     && change.detectedAt === detectedAt
     && inferReviewSource(change) === source;
+}
+
+function sanitizeReviewChange(change: BenefitChange): BenefitChange {
+  return {
+    ...change,
+    ...(change.before ? { before: withPublicOrdinanceUrls(change.before) } : {}),
+    ...(change.after ? { after: withPublicOrdinanceUrls(change.after) } : {}),
+  };
 }
 
 function compareChanges(a: BenefitChange, b: BenefitChange): number {
