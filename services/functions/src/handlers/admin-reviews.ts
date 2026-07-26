@@ -1,4 +1,4 @@
-import { sha256Hex, withPublicOrdinanceUrls } from "@honor/core";
+import { publicOrdinanceUrl, sha256Hex, withPublicOrdinanceUrls } from "@honor/core";
 import type { Benefit, BenefitChange, BenefitChangeSource, ChangeStatus } from "@honor/core";
 import { BulkReviewConflictError } from "../shared/contracts.js";
 import type {
@@ -69,6 +69,20 @@ export function createAdminReviewsHandler(
           }
         }
 
+        if (batchId === undefined) {
+          const summaryChanges = await deps.repository.listReviewSummaryChanges();
+          const pending = summaryChanges.filter((change) => change.status === "PENDING");
+          const groups = summarizePendingGroups(summaryChanges);
+          return json(200, {
+            groups: groups.map((group) => ({
+              ...group,
+              samples: group.samples.map(sanitizeReviewListChange),
+            })),
+            unclassifiedCount: pending.filter((change) => inferReviewSource(change) === undefined).length,
+            generatedAt: (deps.clock ?? systemClock).now().toISOString(),
+          });
+        }
+
         // Compatibility path for the already-deployed web client. New clients
         // include source, detectedAt, and total so detail pages never load the
         // complete change partition before applying the cursor.
@@ -88,16 +102,13 @@ export function createAdminReviewsHandler(
           const offset = cursorIndex + 1;
           const items = changes.slice(offset, offset + limit);
           const nextCursor = offset + items.length < changes.length ? items.at(-1)?.id : undefined;
-          return json(200, { batch, items: items.map(sanitizeReviewChange), total: changes.length, ...(nextCursor ? { nextCursor } : {}) });
+          return json(200, {
+            batch: { ...batch, samples: batch.samples.map(sanitizeReviewListChange) },
+            items: items.map(sanitizeReviewChange),
+            total: changes.length,
+            ...(nextCursor ? { nextCursor } : {}),
+          });
         }
-        return json(200, {
-          groups: groups.map((group) => ({
-            ...group,
-            samples: group.samples.map(sanitizeReviewListChange),
-          })),
-          unclassifiedCount: pending.filter((change) => inferReviewSource(change) === undefined).length,
-          generatedAt: (deps.clock ?? systemClock).now().toISOString(),
-        });
       }
       const requested = event.queryStringParameters?.status;
       if (requested && !STATUSES.has(requested as ChangeStatus)) throw new HttpError(400, "status가 올바르지 않습니다.");
@@ -234,7 +245,7 @@ export function summarizePendingGroups(changes: readonly BenefitChange[]): Revie
         LOW: sorted.filter((change) => change.risk === "LOW").length,
         HIGH: sorted.filter((change) => change.risk === "HIGH").length,
       },
-      samples: sorted.slice(0, 5).map(sanitizeReviewChange),
+      samples: sorted.slice(0, 5),
     };
   }).sort((a, b) => b.detectedAt.localeCompare(a.detectedAt) || a.source.localeCompare(b.source));
 }
@@ -410,13 +421,15 @@ function sanitizeReviewListChange(change: BenefitChange) {
 }
 
 function sanitizeReviewListBenefit(benefit: Benefit) {
-  const safe = withPublicOrdinanceUrls(benefit);
+  const source = benefit.type === "ORDINANCE"
+    ? { ...benefit.source, url: publicOrdinanceUrl(benefit.source.url, benefit.source.id, benefit.title) }
+    : benefit.source;
   return {
-    id: safe.id,
-    type: safe.type,
-    title: safe.title,
-    provider: safe.provider,
-    source: safe.source,
+    id: benefit.id,
+    type: benefit.type,
+    title: benefit.title,
+    provider: benefit.provider,
+    source,
   };
 }
 

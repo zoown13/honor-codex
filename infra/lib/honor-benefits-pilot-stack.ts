@@ -628,7 +628,8 @@ export class HonorBenefitsPilotStack extends Stack {
         ...repositoryEnvironment,
         ADMIN_EMAILS: adminEmails.valueAsString,
         PILOT_ADMIN_TOKEN: pilotAdminToken.valueAsString
-      }
+      },
+      memorySize: 1024
     });
     const publishFunction = createFunction("Publish", {
       entry: "publish.ts",

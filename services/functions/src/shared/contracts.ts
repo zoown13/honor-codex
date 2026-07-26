@@ -113,6 +113,7 @@ export interface AppRepository {
   deleteUserData(userId: string): Promise<number>;
   putChanges(changes: readonly BenefitChange[]): Promise<number>;
   listChanges(statuses?: readonly BenefitChange["status"][]): Promise<BenefitChange[]>;
+  listReviewSummaryChanges(): Promise<BenefitChange[]>;
   listChangeBatchPage(request: ChangeBatchPageRequest): Promise<ChangeBatchPage>;
   getChange(changeId: string): Promise<BenefitChange | undefined>;
   reviewChange(changeId: string, decision: "APPROVED" | "REJECTED", reviewer: string, at: string): Promise<BenefitChange>;

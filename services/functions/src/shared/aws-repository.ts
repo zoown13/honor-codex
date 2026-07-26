@@ -152,6 +152,56 @@ export class DynamoAppRepository implements AppRepository {
       .sort((a, b) => b.detectedAt.localeCompare(a.detectedAt));
   }
 
+  async listReviewSummaryChanges(): Promise<BenefitChange[]> {
+    const values: BenefitChange[] = [];
+    let startKey: Record<string, unknown> | undefined;
+    do {
+      const result = await this.#client.send(new QueryCommand({
+        TableName: this.#tableName,
+        KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)",
+        ProjectionExpression: [
+          "#id",
+          "#benefitId",
+          "#action",
+          "#risk",
+          "#status",
+          "#detectedAt",
+          "#changeSource",
+          "#before.#id",
+          "#before.#type",
+          "#before.#title",
+          "#before.#provider",
+          "#before.#benefitSource",
+          "#after.#id",
+          "#after.#type",
+          "#after.#title",
+          "#after.#provider",
+          "#after.#benefitSource",
+        ].join(", "),
+        ExpressionAttributeNames: {
+          "#id": "id",
+          "#benefitId": "benefitId",
+          "#action": "action",
+          "#risk": "risk",
+          "#status": "status",
+          "#detectedAt": "detectedAt",
+          "#changeSource": "source",
+          "#before": "before",
+          "#after": "after",
+          "#type": "type",
+          "#title": "title",
+          "#provider": "provider",
+          "#benefitSource": "source",
+        },
+        ExpressionAttributeValues: { ":pk": "CHANGE", ":prefix": "CHG#" },
+        ...(startKey ? { ExclusiveStartKey: startKey } : {}),
+      }));
+      values.push(...(result.Items ?? []).map((item) => fromItem<BenefitChange>(item)));
+      startKey = result.LastEvaluatedKey as Record<string, unknown> | undefined;
+    } while (startKey);
+    return values.sort((a, b) => b.detectedAt.localeCompare(a.detectedAt));
+  }
+
   async listChangeBatchPage(request: ChangeBatchPageRequest): Promise<ChangeBatchPage> {
     const identity = reviewSourceIdentity(request.source);
     const targetCount = request.limit + 1;

@@ -250,6 +250,7 @@ describe("HonorBenefitsPilotStack", () => {
       Properties: {
         FunctionName: string;
         Environment: { Variables: Record<string, unknown> };
+        MemorySize: number;
         Timeout: number;
       };
     }>;
@@ -275,6 +276,10 @@ describe("HonorBenefitsPilotStack", () => {
     ]);
     expect(keys("honor-pilot-push-subscriptions")).toEqual(["TABLE_NAME", "USER_POOL_ID"]);
     expect(keys("honor-pilot-admin-reviews")).toEqual(["ADMIN_EMAILS", "PILOT_ADMIN_TOKEN", "TABLE_NAME"]);
+    const adminReviewsLambda = lambdaResources.find(
+      ({ Properties }) => Properties.FunctionName === "honor-pilot-admin-reviews"
+    );
+    expect(adminReviewsLambda?.Properties.MemorySize).toBe(1024);
     expect(keys("honor-pilot-publish")).toEqual([
       "ADMIN_EMAILS", "AMPLIFY_APP_ID", "AMPLIFY_BRANCH", "DATA_BUCKET", "DATA_PREFIX",
       "NOTIFICATION_FUNCTION_NAME", "PILOT_ADMIN_TOKEN", "PUBLISH_ENABLED", "RAW_PREFIX", "TABLE_NAME"

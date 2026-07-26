@@ -213,10 +213,14 @@ describe("authenticated APIs", () => {
   it("summarizes strict source batches and pages full reviews at no more than 100 items", async () => {
     const repo = new FakeRepository();
     repo.changes.push(...Array.from({ length: 130 }, (_, index) => baselineFacilityChange(index)));
+    const listChanges = vi.spyOn(repo, "listChanges");
+    const listReviewSummaryChanges = vi.spyOn(repo, "listReviewSummaryChanges");
     const handler = createAdminReviewsHandler({ repository: repo, clock: fixedClock }, { ADMIN_EMAILS: "pilot@example.com" });
 
     const summaryResult = await handler(httpEvent("/v1/admin/review-batches", "GET"));
     expect(summaryResult.statusCode).toBe(200);
+    expect(listReviewSummaryChanges).toHaveBeenCalledOnce();
+    expect(listChanges).not.toHaveBeenCalled();
     const summary = JSON.parse(summaryResult.body ?? "{}") as {
       groups: Array<{
         batchId: string; source: string; count: number; fingerprint: string; eligible: boolean;

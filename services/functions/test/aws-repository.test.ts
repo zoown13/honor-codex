@@ -3,6 +3,45 @@ import { QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it, vi } from "vitest";
 import { DynamoAppRepository } from "../src/shared/aws-repository.js";
 
+describe("DynamoAppRepository review summaries", () => {
+  it("projects only fields required to aggregate batches and follows DynamoDB pages", async () => {
+    const item = (id: string, detectedAt: string) => ({
+      pk: "CHANGE",
+      sk: `CHG#${id}`,
+      id,
+      benefitId: `ord:${id}`,
+      action: "ADD",
+      risk: "HIGH",
+      status: "PENDING",
+      detectedAt,
+      after: {
+        id: `ord:${id}`,
+        type: "ORDINANCE",
+        title: `조례 ${id}`,
+        provider: "테스트시",
+        source: { id, system: "LAW_GO_KR", url: `https://law.go.kr/${id}` },
+      },
+    });
+    const send = vi.fn()
+      .mockResolvedValueOnce({
+        Items: [item("later", "2026-07-16T00:00:00.000Z")],
+        LastEvaluatedKey: { pk: "CHANGE", sk: "CHG#later" },
+      })
+      .mockResolvedValueOnce({ Items: [item("earlier", "2026-07-15T00:00:00.000Z")] });
+    const repository = new DynamoAppRepository({ tableName: "pilot-table", client: fakeClient(send) });
+
+    const changes = await repository.listReviewSummaryChanges();
+
+    expect(changes.map(({ id }) => id)).toEqual(["later", "earlier"]);
+    expect(send).toHaveBeenCalledTimes(2);
+    const first = queryInput(send.mock.calls[0]![0]);
+    const second = queryInput(send.mock.calls[1]![0]);
+    expect(first.ProjectionExpression).toContain("#after.#benefitSource");
+    expect(first.ProjectionExpression).not.toMatch(/summary|evidence|searchText/);
+    expect(second.ExclusiveStartKey).toEqual({ pk: "CHANGE", sk: "CHG#later" });
+  });
+});
+
 describe("DynamoAppRepository review batch pages", () => {
   it("stops after collecting one item beyond the requested page", async () => {
     const detectedAt = "2026-07-15T00:00:00.000Z";

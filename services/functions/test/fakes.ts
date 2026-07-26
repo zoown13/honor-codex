@@ -66,6 +66,26 @@ export class FakeRepository implements AppRepository {
   async listChanges(statuses?: readonly BenefitChange["status"][]) {
     return this.changes.filter((item) => !statuses?.length || statuses.includes(item.status));
   }
+  async listReviewSummaryChanges() {
+    const projectBenefit = (value: Benefit) => ({
+      id: value.id,
+      type: value.type,
+      title: value.title,
+      provider: value.provider,
+      source: value.source,
+    }) as Benefit;
+    return this.changes.map((change) => ({
+      id: change.id,
+      benefitId: change.benefitId,
+      action: change.action,
+      risk: change.risk,
+      status: change.status,
+      detectedAt: change.detectedAt,
+      ...(change.source ? { source: change.source } : {}),
+      ...(change.before ? { before: projectBenefit(change.before) } : {}),
+      ...(change.after ? { after: projectBenefit(change.after) } : {}),
+    }) as BenefitChange);
+  }
   async listChangeBatchPage(request: ChangeBatchPageRequest): Promise<ChangeBatchPage> {
     const changes = this.changes
       .filter((change) => change.status === request.status
