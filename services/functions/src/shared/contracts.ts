@@ -42,6 +42,19 @@ export interface BulkReviewChunkResult {
   processedCount: number;
 }
 
+export interface ChangeBatchPageRequest {
+  status: BenefitChange["status"];
+  source: BenefitChangeSource;
+  detectedAt: string;
+  limit: number;
+  cursor?: string;
+}
+
+export interface ChangeBatchPage {
+  items: BenefitChange[];
+  nextCursor?: string;
+}
+
 export interface PublicationOperation {
   id: string;
   fingerprint: string;
@@ -100,6 +113,7 @@ export interface AppRepository {
   deleteUserData(userId: string): Promise<number>;
   putChanges(changes: readonly BenefitChange[]): Promise<number>;
   listChanges(statuses?: readonly BenefitChange["status"][]): Promise<BenefitChange[]>;
+  listChangeBatchPage(request: ChangeBatchPageRequest): Promise<ChangeBatchPage>;
   getChange(changeId: string): Promise<BenefitChange | undefined>;
   reviewChange(changeId: string, decision: "APPROVED" | "REJECTED", reviewer: string, at: string): Promise<BenefitChange>;
   getBulkReviewOperation(operationId: string): Promise<BulkReviewOperation | undefined>;

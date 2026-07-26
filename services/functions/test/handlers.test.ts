@@ -261,6 +261,61 @@ describe("authenticated APIs", () => {
     expect(oversizedPage.statusCode).toBe(400);
   });
 
+  it("pages optimized review batches without rescanning full changes or returning full benefit text", async () => {
+    const repo = new FakeRepository();
+    repo.changes.push(...Array.from({ length: 60 }, (_, index) => baselineFacilityChange(index)));
+    const listChanges = vi.spyOn(repo, "listChanges");
+    const listBatchPage = vi.spyOn(repo, "listChangeBatchPage");
+    const handler = createAdminReviewsHandler({ repository: repo, clock: fixedClock }, { ADMIN_EMAILS: "pilot@example.com" });
+    const summaryResult = await handler(httpEvent("/v1/admin/review-batches", "GET"));
+    const group = (JSON.parse(summaryResult.body ?? "{}") as {
+      groups: Array<{ batchId: string; source: string; detectedAt: string; count: number }>;
+    }).groups[0]!;
+    const query = {
+      limit: "25",
+      source: group.source,
+      detectedAt: group.detectedAt,
+      total: String(group.count),
+    };
+    listChanges.mockClear();
+    listBatchPage.mockClear();
+
+    const first = await handler(httpEvent(`/v1/admin/review-batches/${group.batchId}`, "GET", undefined, {
+      pathParameters: { batchId: group.batchId },
+      query,
+    }));
+    const firstBody = JSON.parse(first.body ?? "{}") as {
+      items: BenefitChange[]; total: number; nextCursor?: string;
+    };
+
+    expect(first.statusCode).toBe(200);
+    expect(firstBody.items).toHaveLength(25);
+    expect(firstBody.total).toBe(60);
+    expect(firstBody.nextCursor).toBeTruthy();
+    expect(listBatchPage).toHaveBeenCalledExactlyOnceWith({
+      status: "PENDING",
+      source: "MMA_FACILITIES",
+      detectedAt: baselineDetectedAt,
+      limit: 25,
+    });
+    expect(listChanges).not.toHaveBeenCalled();
+    expect(Object.keys(firstBody.items[0]?.after ?? {}).sort()).toEqual([
+      "id", "provider", "source", "title", "type",
+    ]);
+
+    const second = await handler(httpEvent(`/v1/admin/review-batches/${group.batchId}`, "GET", undefined, {
+      pathParameters: { batchId: group.batchId },
+      query: { ...query, cursor: firstBody.nextCursor ?? "" },
+    }));
+    expect((JSON.parse(second.body ?? "{}") as { items: BenefitChange[] }).items).toHaveLength(25);
+
+    const incomplete = await handler(httpEvent(`/v1/admin/review-batches/${group.batchId}`, "GET", undefined, {
+      pathParameters: { batchId: group.batchId },
+      query: { source: group.source },
+    }));
+    expect(incomplete.statusCode).toBe(400);
+  });
+
   it("approves a baseline in atomic resumable chunks and records server-owned audit fields", async () => {
     const repo = new FakeRepository();
     repo.changes.push(...Array.from({ length: 105 }, (_, index) => baselineFacilityChange(index)));

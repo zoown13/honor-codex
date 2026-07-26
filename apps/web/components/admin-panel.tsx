@@ -1,6 +1,6 @@
 "use client";
 
-import { publicOrdinanceUrl, type Benefit } from "@honor/core";
+import { publicOrdinanceUrl } from "@honor/core";
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import {
   ApiError,
@@ -17,10 +17,13 @@ import {
   setPilotAdminAccess,
   type ActiveReviewOperation,
   type ReviewBatchPage,
+  type ReviewListBenefit,
   type ReviewSource,
   type ReviewSummaryGroup
 } from "../lib/api";
 import { formatDate } from "../lib/format";
+
+const REVIEW_PAGE_SIZE = 25;
 
 const SOURCE_META: Record<ReviewSource, { label: string; description: string; symbol: string }> = {
   MMA_FACILITIES: {
@@ -44,7 +47,7 @@ function currentBenefit(change: ReviewSummaryGroup["samples"][number]) {
   return change.after ?? change.before;
 }
 
-function reviewSourceUrl(benefit: Benefit) {
+function reviewSourceUrl(benefit: ReviewListBenefit) {
   if (benefit.type === "ORDINANCE") return publicOrdinanceUrl(benefit.source.url, benefit.source.id, benefit.title);
   return benefit.source.url;
 }
@@ -140,7 +143,7 @@ export function AdminPanel() {
     setReviewListLoading(true);
     setError("");
     try {
-      const page = await getReviewBatchPage(group.batchId, cursor);
+      const page = await getReviewBatchPage(group, cursor, REVIEW_PAGE_SIZE);
       setReviewPage(page);
       setReviewPageIndex(pageIndex);
       setReviewPageCursors(cursors);
@@ -458,7 +461,7 @@ export function AdminPanel() {
             aria-describedby="review-list-description"
           >
             <button className="review-dialog__close" type="button" aria-label="전체 검수 목록 닫기" onClick={closeReviewList}>×</button>
-            <span className="eyebrow">100건씩 전체 확인</span>
+            <span className="eyebrow">{REVIEW_PAGE_SIZE}건씩 빠르게 확인</span>
             <h3 id="review-list-title">{reviewListGroup.label} 전체 검수</h3>
             <p id="review-list-description">표본 5건에 한정하지 않고 승인 대상 전체를 확인합니다. 원문은 새 창에서 열립니다.</p>
 
@@ -467,8 +470,8 @@ export function AdminPanel() {
               <>
                 <div className="review-list__range" aria-live="polite">
                   <strong>
-                    {(reviewPageIndex * 100 + 1).toLocaleString("ko-KR")}–
-                    {(reviewPageIndex * 100 + reviewPage.items.length).toLocaleString("ko-KR")}
+                    {(reviewPageIndex * REVIEW_PAGE_SIZE + 1).toLocaleString("ko-KR")}–
+                    {(reviewPageIndex * REVIEW_PAGE_SIZE + reviewPage.items.length).toLocaleString("ko-KR")}
                   </strong>
                   <span>/ {reviewPage.total.toLocaleString("ko-KR")}건</span>
                 </div>
@@ -492,9 +495,9 @@ export function AdminPanel() {
                   })}
                 </div>
                 <nav className="review-list__pagination" aria-label="전체 검수 목록 페이지">
-                  <button className="secondary-button" type="button" disabled={reviewListLoading || reviewPageIndex === 0} onClick={previousReviewPage}>이전 100건</button>
+                  <button className="secondary-button" type="button" disabled={reviewListLoading || reviewPageIndex === 0} onClick={previousReviewPage}>이전 {REVIEW_PAGE_SIZE}건</button>
                   <span>{reviewPageIndex + 1}페이지</span>
-                  <button className="secondary-button" type="button" disabled={reviewListLoading || !reviewPage.nextCursor} onClick={nextReviewPage}>다음 100건</button>
+                  <button className="secondary-button" type="button" disabled={reviewListLoading || !reviewPage.nextCursor} onClick={nextReviewPage}>다음 {REVIEW_PAGE_SIZE}건</button>
                 </nav>
               </>
             ) : null}

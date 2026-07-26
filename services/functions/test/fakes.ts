@@ -10,6 +10,8 @@ import {
 import type {
   AppRepository,
   BulkReviewOperation,
+  ChangeBatchPage,
+  ChangeBatchPageRequest,
   DatasetPublication,
   DatasetStorage,
   DeliveryReservation,
@@ -63,6 +65,20 @@ export class FakeRepository implements AppRepository {
   }
   async listChanges(statuses?: readonly BenefitChange["status"][]) {
     return this.changes.filter((item) => !statuses?.length || statuses.includes(item.status));
+  }
+  async listChangeBatchPage(request: ChangeBatchPageRequest): Promise<ChangeBatchPage> {
+    const changes = this.changes
+      .filter((change) => change.status === request.status
+        && inferReviewSource(change) === request.source
+        && change.detectedAt === request.detectedAt)
+      .sort((left, right) => left.id.localeCompare(right.id));
+    const cursorIndex = request.cursor === undefined
+      ? -1
+      : changes.findIndex((change) => change.id === request.cursor);
+    const offset = cursorIndex + 1;
+    const items = changes.slice(offset, offset + request.limit);
+    const nextCursor = offset + items.length < changes.length ? items.at(-1)?.id : undefined;
+    return { items, ...(nextCursor ? { nextCursor } : {}) };
   }
   async getChange(id: string) { return this.changes.find((item) => item.id === id); }
   async reviewChange(id: string, decision: "APPROVED" | "REJECTED", reviewer: string, at: string) {

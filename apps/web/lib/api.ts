@@ -1,4 +1,5 @@
 import type {
+  Benefit,
   BenefitChange,
   ChangeAction,
   ChangeRisk,
@@ -45,6 +46,12 @@ export interface CreateSubscriptionInput {
   channels: NotificationChannel[];
 }
 
+export type ReviewListBenefit = Pick<Benefit, "id" | "type" | "title" | "provider" | "source">;
+export type ReviewListChange = Pick<
+  BenefitChange,
+  "id" | "benefitId" | "action" | "risk" | "status" | "detectedAt" | "source"
+> & { before?: ReviewListBenefit; after?: ReviewListBenefit };
+
 export interface ReviewSummaryGroup {
   source: ReviewSource;
   label: string;
@@ -57,7 +64,7 @@ export interface ReviewSummaryGroup {
   confirmationPhrase: string;
   actionCounts: Record<ChangeAction, number>;
   riskCounts: Record<ChangeRisk, number>;
-  samples: BenefitChange[];
+  samples: ReviewListChange[];
 }
 
 export interface ReviewSummaryResponse {
@@ -67,8 +74,8 @@ export interface ReviewSummaryResponse {
 }
 
 export interface ReviewBatchPage {
-  batch: ReviewSummaryGroup;
-  items: BenefitChange[];
+  batch?: ReviewSummaryGroup;
+  items: ReviewListChange[];
   total: number;
   nextCursor?: string;
 }
@@ -424,31 +431,36 @@ export async function getReviewSummary(): Promise<ReviewSummaryResponse> {
 }
 
 export async function getReviewBatchPage(
-  batchId: string,
+  batch: Pick<ReviewSummaryGroup, "batchId" | "source" | "detectedAt" | "count">,
   cursor?: string,
-  limit = 100,
+  limit = 25,
 ): Promise<ReviewBatchPage> {
   if (!IS_MOCK_API) {
-    const query = new URLSearchParams({ limit: String(limit) });
+    const query = new URLSearchParams({
+      limit: String(limit),
+      source: batch.source,
+      detectedAt: batch.detectedAt,
+      total: String(batch.count),
+    });
     if (cursor) query.set("cursor", cursor);
     return pilotAdminRequest<ReviewBatchPage>(
-      `/v1/pilot-admin/review-batches/${encodeURIComponent(batchId)}?${query.toString()}`,
+      `/v1/pilot-admin/review-batches/${encodeURIComponent(batch.batchId)}?${query.toString()}`,
     );
   }
 
-  const batch = mockReviewSummary().groups.find((group) => group.batchId === batchId);
-  if (!batch) throw new ApiError(404, "검수 배치를 찾을 수 없습니다.");
+  const mockBatch = mockReviewSummary().groups.find((group) => group.batchId === batch.batchId);
+  if (!mockBatch) throw new ApiError(404, "검수 배치를 찾을 수 없습니다.");
   const changes = storedChanges()
     .filter((change) => change.status === "PENDING"
-      && reviewSource(change) === batch.source
-      && change.detectedAt === batch.detectedAt)
+      && reviewSource(change) === mockBatch.source
+      && change.detectedAt === mockBatch.detectedAt)
     .sort((left, right) => left.id.localeCompare(right.id));
   const cursorIndex = cursor === undefined ? -1 : changes.findIndex((change) => change.id === cursor);
   if (cursor !== undefined && cursorIndex < 0) throw new ApiError(400, "cursor가 현재 검수 배치에 없습니다.");
   const offset = cursorIndex + 1;
   const items = changes.slice(offset, offset + limit);
   const nextCursor = offset + items.length < changes.length ? items.at(-1)?.id : undefined;
-  return { batch, items, total: changes.length, ...(nextCursor ? { nextCursor } : {}) };
+  return { batch: mockBatch, items, total: changes.length, ...(nextCursor ? { nextCursor } : {}) };
 }
 
 interface MockReviewOperation {

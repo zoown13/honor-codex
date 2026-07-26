@@ -76,6 +76,6 @@ describe("AdminPanel", () => {
     const dialog = await screen.findByRole("dialog", { name: "병무청 예우시설 전체 검수" });
     expect(within(dialog).getByText("1페이지")).toBeInTheDocument();
     expect(within(dialog).getByText("/ 1건")).toBeInTheDocument();
-    expect(within(dialog).getByRole("button", { name: "다음 100건" })).toBeDisabled();
+    expect(within(dialog).getByRole("button", { name: "다음 25건" })).toBeDisabled();
   });
 });
