@@ -18,6 +18,8 @@ import type {
   BeginPublicationResult,
   BulkReviewChunkResult,
   BulkReviewOperation,
+  ChangeBatchPage,
+  ChangeBatchPageRequest,
   DeliveryReservation,
   PublicationOperation,
   StoredSubscription,
@@ -148,6 +150,69 @@ export class DynamoAppRepository implements AppRepository {
     return values
       .filter((item) => !statuses?.length || statuses.includes(item.status))
       .sort((a, b) => b.detectedAt.localeCompare(a.detectedAt));
+  }
+
+  async listChangeBatchPage(request: ChangeBatchPageRequest): Promise<ChangeBatchPage> {
+    const identity = reviewSourceIdentity(request.source);
+    const targetCount = request.limit + 1;
+    const values: BenefitChange[] = [];
+    let startKey: Record<string, unknown> | undefined = request.cursor
+      ? { pk: "CHANGE", sk: `CHG#${request.cursor}` }
+      : undefined;
+
+    do {
+      const result = await this.#client.send(new QueryCommand({
+        TableName: this.#tableName,
+        KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)",
+        FilterExpression: [
+          "#status = :status AND",
+          "detectedAt = :detectedAt AND",
+          "(#changeSource = :source OR (",
+          "attribute_not_exists(#changeSource)",
+          "AND begins_with(benefitId, :benefitIdPrefix)",
+          "AND ((attribute_exists(#after)",
+          "AND begins_with(#after.#id, :benefitIdPrefix)",
+          "AND #after.#type = :benefitType",
+          "AND #after.#benefitSource.#system = :sourceSystem)",
+          "OR (attribute_not_exists(#after)",
+          "AND attribute_exists(#before)",
+          "AND begins_with(#before.#id, :benefitIdPrefix)",
+          "AND #before.#type = :benefitType",
+          "AND #before.#benefitSource.#system = :sourceSystem))))",
+        ].join(" "),
+        ExpressionAttributeNames: {
+          "#status": "status",
+          "#changeSource": "source",
+          "#after": "after",
+          "#before": "before",
+          "#id": "id",
+          "#type": "type",
+          "#benefitSource": "source",
+          "#system": "system",
+        },
+        ExpressionAttributeValues: {
+          ":pk": "CHANGE",
+          ":prefix": "CHG#",
+          ":status": request.status,
+          ":source": request.source,
+          ":detectedAt": request.detectedAt,
+          ":benefitIdPrefix": identity.benefitIdPrefix,
+          ":benefitType": identity.benefitType,
+          ":sourceSystem": identity.sourceSystem,
+        },
+        Limit: targetCount,
+        ...(startKey ? { ExclusiveStartKey: startKey } : {}),
+      }));
+      values.push(...(result.Items ?? []).map((item) => fromItem<BenefitChange>(item)));
+      startKey = result.LastEvaluatedKey as Record<string, unknown> | undefined;
+    } while (startKey && values.length < targetCount);
+
+    const items = values.slice(0, request.limit);
+    const nextCursor = values.length > request.limit ? items.at(-1)?.id : undefined;
+    return {
+      items,
+      ...(nextCursor ? { nextCursor } : {}),
+    };
   }
 
   async getChange(changeId: string): Promise<BenefitChange | undefined> {

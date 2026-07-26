@@ -1,7 +1,56 @@
 import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
-import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
+import { QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it, vi } from "vitest";
 import { DynamoAppRepository } from "../src/shared/aws-repository.js";
+
+describe("DynamoAppRepository review batch pages", () => {
+  it("stops after collecting one item beyond the requested page", async () => {
+    const detectedAt = "2026-07-15T00:00:00.000Z";
+    const item = (id: string) => ({
+      pk: "CHANGE",
+      sk: `CHG#${id}`,
+      id,
+      benefitId: `fac:${id}`,
+      action: "ADD",
+      risk: "HIGH",
+      status: "PENDING",
+      changedFields: ["created"],
+      detectedAt,
+    });
+    const send = vi.fn()
+      .mockResolvedValueOnce({
+        Items: [item("chg:1")],
+        LastEvaluatedKey: { pk: "CHANGE", sk: "CHG#evaluated-1" },
+      })
+      .mockResolvedValueOnce({ Items: [item("chg:2"), item("chg:3")] });
+    const repository = new DynamoAppRepository({
+      tableName: "pilot-table",
+      client: fakeClient(send),
+    });
+
+    const page = await repository.listChangeBatchPage({
+      status: "PENDING",
+      source: "MMA_FACILITIES",
+      detectedAt,
+      limit: 2,
+      cursor: "chg:previous",
+    });
+
+    expect(page.items.map(({ id }) => id)).toEqual(["chg:1", "chg:2"]);
+    expect(page.nextCursor).toBe("chg:2");
+    expect(send).toHaveBeenCalledTimes(2);
+    const first = queryInput(send.mock.calls[0]![0]);
+    const second = queryInput(send.mock.calls[1]![0]);
+    expect(first).toMatchObject({
+      Limit: 3,
+      ExclusiveStartKey: { pk: "CHANGE", sk: "CHG#chg:previous" },
+      ExpressionAttributeValues: { ":status": "PENDING", ":source": "MMA_FACILITIES", ":detectedAt": detectedAt, ":benefitIdPrefix": "fac:", ":benefitType": "FACILITY", ":sourceSystem": "MMA" },
+    });
+    expect(second).toMatchObject({ Limit: 3, ExclusiveStartKey: { pk: "CHANGE", sk: "CHG#evaluated-1" } });
+    expect(first.FilterExpression).toContain("attribute_not_exists(#changeSource)");
+    expect(first.FilterExpression).toContain("#after.#benefitSource.#system = :sourceSystem");
+  });
+});
 
 describe("DynamoAppRepository publication finalization", () => {
   it("deduplicates IDs, writes 25-item transactions, and paces successful chunks", async () => {
@@ -108,6 +157,11 @@ describe("DynamoAppRepository publication finalization", () => {
 
 function fakeClient(send: ReturnType<typeof vi.fn>): DynamoDBDocumentClient {
   return { send } as unknown as DynamoDBDocumentClient;
+}
+
+function queryInput(command: unknown): QueryCommand["input"] {
+  expect(command).toBeInstanceOf(QueryCommand);
+  return (command as QueryCommand).input;
 }
 
 function transactionInput(command: unknown): TransactWriteCommand["input"] {

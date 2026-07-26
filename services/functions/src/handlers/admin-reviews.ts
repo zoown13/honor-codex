@@ -1,5 +1,5 @@
 import { sha256Hex, withPublicOrdinanceUrls } from "@honor/core";
-import type { BenefitChange, BenefitChangeSource, ChangeStatus } from "@honor/core";
+import type { Benefit, BenefitChange, BenefitChangeSource, ChangeStatus } from "@honor/core";
 import { BulkReviewConflictError } from "../shared/contracts.js";
 import type {
   AppRepository,
@@ -44,12 +44,38 @@ export function createAdminReviewsHandler(
       || event.rawPath.startsWith("/v1/pilot-admin/review-batches");
     if (method(event) === "GET") {
       if (reviewBatchPath) {
-        const allChanges = await deps.repository.listChanges();
-        const pending = allChanges.filter((change) => change.status === "PENDING");
-        const groups = summarizePendingGroups(allChanges);
         const batchId = event.pathParameters?.batchId;
         if (batchId !== undefined) {
           if (!SHA256_PATTERN.test(batchId)) throw new HttpError(400, "batchId가 올바르지 않습니다.");
+          const optimized = parseOptimizedBatchPageRequest(event.queryStringParameters);
+          if (optimized) {
+            const limit = pageLimit(event.queryStringParameters?.limit);
+            const cursor = event.queryStringParameters?.cursor;
+            if (cursor !== undefined && (!cursor.startsWith("chg:") || cursor.length > 256)) {
+              throw new HttpError(400, "cursor가 올바르지 않습니다.");
+            }
+            const page = await deps.repository.listChangeBatchPage({
+              status: "PENDING",
+              source: optimized.source,
+              detectedAt: optimized.detectedAt,
+              limit,
+              ...(cursor ? { cursor } : {}),
+            });
+            return json(200, {
+              items: page.items.map(sanitizeReviewListChange),
+              total: optimized.total,
+              ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
+            });
+          }
+        }
+
+        // Compatibility path for the already-deployed web client. New clients
+        // include source, detectedAt, and total so detail pages never load the
+        // complete change partition before applying the cursor.
+        const allChanges = await deps.repository.listChanges();
+        const pending = allChanges.filter((change) => change.status === "PENDING");
+        const groups = summarizePendingGroups(allChanges);
+        if (batchId !== undefined) {
           const batch = groups.find((group) => group.batchId === batchId);
           if (!batch) throw new HttpError(404, "검수 배치를 찾을 수 없습니다.");
           const changes = pending
@@ -65,7 +91,10 @@ export function createAdminReviewsHandler(
           return json(200, { batch, items: items.map(sanitizeReviewChange), total: changes.length, ...(nextCursor ? { nextCursor } : {}) });
         }
         return json(200, {
-          groups,
+          groups: groups.map((group) => ({
+            ...group,
+            samples: group.samples.map(sanitizeReviewListChange),
+          })),
           unclassifiedCount: pending.filter((change) => inferReviewSource(change) === undefined).length,
           generatedAt: (deps.clock ?? systemClock).now().toISOString(),
         });
@@ -134,6 +163,12 @@ interface ReviewGroupSummary {
   actionCounts: Record<BenefitChange["action"], number>;
   riskCounts: Record<BenefitChange["risk"], number>;
   samples: BenefitChange[];
+}
+
+interface OptimizedBatchPageRequest {
+  source: BenefitChangeSource;
+  detectedAt: string;
+  total: number;
 }
 
 interface BulkReviewRequest {
@@ -360,6 +395,31 @@ function sanitizeReviewChange(change: BenefitChange): BenefitChange {
   };
 }
 
+function sanitizeReviewListChange(change: BenefitChange) {
+  return {
+    id: change.id,
+    benefitId: change.benefitId,
+    action: change.action,
+    risk: change.risk,
+    status: change.status,
+    detectedAt: change.detectedAt,
+    ...(change.source ? { source: change.source } : {}),
+    ...(change.before ? { before: sanitizeReviewListBenefit(change.before) } : {}),
+    ...(change.after ? { after: sanitizeReviewListBenefit(change.after) } : {}),
+  };
+}
+
+function sanitizeReviewListBenefit(benefit: Benefit) {
+  const safe = withPublicOrdinanceUrls(benefit);
+  return {
+    id: safe.id,
+    type: safe.type,
+    title: safe.title,
+    provider: safe.provider,
+    source: safe.source,
+  };
+}
+
 function compareChanges(a: BenefitChange, b: BenefitChange): number {
   return b.detectedAt.localeCompare(a.detectedAt) || a.id.localeCompare(b.id);
 }
@@ -379,6 +439,29 @@ function requiredString(record: Record<string, unknown>, key: string, max: numbe
     throw new HttpError(400, `${key} 값이 올바르지 않습니다.`);
   }
   return value.trim();
+}
+
+function parseOptimizedBatchPageRequest(
+  query: HttpEvent["queryStringParameters"],
+): OptimizedBatchPageRequest | undefined {
+  const source = query?.source;
+  const detectedAt = query?.detectedAt;
+  const totalValue = query?.total;
+  if (source === undefined && detectedAt === undefined && totalValue === undefined) return undefined;
+  if (source === undefined || detectedAt === undefined || totalValue === undefined) {
+    throw new HttpError(400, "source, detectedAt, total을 모두 입력해야 합니다.");
+  }
+  if (!REVIEW_SOURCES.has(source as BenefitChangeSource)) {
+    throw new HttpError(400, "source가 올바르지 않습니다.");
+  }
+  if (!isExactIsoTimestamp(detectedAt)) {
+    throw new HttpError(400, "detectedAt이 올바른 ISO 시각이 아닙니다.");
+  }
+  const total = Number(totalValue);
+  if (!Number.isInteger(total) || total < 1 || total > MAX_BULK_COUNT) {
+    throw new HttpError(400, `total은 1 이상 ${MAX_BULK_COUNT} 이하의 정수여야 합니다.`);
+  }
+  return { source: source as BenefitChangeSource, detectedAt, total };
 }
 
 function isExactIsoTimestamp(value: string): boolean {
