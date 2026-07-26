@@ -38,6 +38,11 @@ const ALL_PUBLISH_SOURCES: readonly BenefitChangeSource[] = [
 ];
 const PUBLISH_SOURCE_SET = new Set<BenefitChangeSource>(ALL_PUBLISH_SOURCES);
 
+interface PublishWorkerEvent {
+  source: "honor-pilot-publish-control";
+  sources: BenefitChangeSource[];
+}
+
 export function createPublishHandler(
   deps: {
     repository: AppRepository;
@@ -287,10 +292,31 @@ export function applyChanges(current: readonly Benefit[], changes: readonly Bene
   return [...items.values()].sort((a, b) => a.id.localeCompare(b.id));
 }
 
-export const handler = (event: HttpEvent): Promise<HttpResult> =>
-  createPublishHandler({
+export const handler = (event: HttpEvent | PublishWorkerEvent): Promise<HttpResult> => {
+  const deps = {
     repository: repository(),
     storage: datasetStorage(),
     deployment: deploymentTrigger(),
     notifications: notificationTrigger(),
-  })(event);
+  };
+  if (isPublishWorkerEvent(event)) {
+    const token = process.env.PILOT_ADMIN_TOKEN?.trim();
+    if (!token) throw new Error("PILOT_ADMIN_TOKEN is required");
+    const internalEvent = {
+      rawPath: "/v1/pilot-admin/publish",
+      headers: { "x-honor-pilot-admin": token },
+      body: JSON.stringify({ sources: event.sources }),
+      isBase64Encoded: false,
+      requestContext: { http: { method: "POST" } },
+    } as unknown as HttpEvent;
+    return createPublishHandler(deps, { ...process.env, PUBLISH_ENABLED: "true" })(internalEvent);
+  }
+  return createPublishHandler(deps)(event);
+};
+
+function isPublishWorkerEvent(event: HttpEvent | PublishWorkerEvent): event is PublishWorkerEvent {
+  return "source" in event
+    && event.source === "honor-pilot-publish-control"
+    && Array.isArray(event.sources)
+    && event.sources.every((source) => PUBLISH_SOURCE_SET.has(source));
+}

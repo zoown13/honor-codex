@@ -94,7 +94,8 @@ export async function persistIngestion(
   const current = (await storage.loadBenefits()).filter(
     (item) => item.type === input.benefitType && item.id.startsWith(input.benefitIdPrefix)
   );
-  const allDetected = diffBenefitSets(current, input.benefits, input.retrievedAt);
+  const candidates = preserveReviewedAiSummaries(current, input.benefits);
+  const allDetected = diffBenefitSets(current, candidates, input.retrievedAt);
   const detected = input.allowDeletes === false
     ? allDetected.filter((change) => change.action !== "DELETE")
     : allDetected;
@@ -102,7 +103,7 @@ export async function persistIngestion(
   const firstBaselineGuardTriggered = current.length < 20 && detected.length > 0;
   const batchGuardTriggered = firstBaselineGuardTriggered || (
     current.length >= 20 && (
-      Math.abs(input.benefits.length - current.length) / current.length > 0.05
+      Math.abs(candidates.length - current.length) / current.length > 0.05
       || deletionCount / current.length > 0.01
     )
   );
@@ -110,10 +111,10 @@ export async function persistIngestion(
     ? detected.map((change) => ({ ...change, source: reviewSource, risk: "HIGH" as const, status: "PENDING" as const }))
     : detected.map((change) => ({ ...change, source: reviewSource }));
   const insertedChanges = await repository.putChanges(changes);
-  const candidateKey = await storage.saveCandidate(input.sourceName, input.retrievedAt, input.benefits);
+  const candidateKey = await storage.saveCandidate(input.sourceName, input.retrievedAt, candidates);
   return {
     source: input.sourceName,
-    received: input.benefits.length,
+    received: candidates.length,
     changes: changes.length,
     insertedChanges,
     batchGuardTriggered,
@@ -122,6 +123,38 @@ export async function persistIngestion(
     snapshotKey,
     candidateKey,
   };
+}
+
+export function preserveReviewedAiSummaries(
+  current: readonly Benefit[],
+  candidates: readonly Benefit[],
+): Benefit[] {
+  const currentById = new Map(current.map((benefit) => [benefit.id, benefit]));
+  return candidates.map((candidate) => {
+    if (candidate.type !== "ORDINANCE") return candidate;
+    const previous = currentById.get(candidate.id);
+    const provenance = previous?.summaryProvenance;
+    if (!previous || provenance?.kind !== "AI"
+      || provenance.sourceContentHash !== candidate.source.contentHash
+      || previous.source.contentHash !== candidate.source.contentHash) {
+      return candidate;
+    }
+    const merged: Benefit = {
+      ...candidate,
+      benefitKind: previous.benefitKind,
+      summary: previous.summary,
+      eligibility: previous.eligibility,
+      requiredProof: previous.requiredProof,
+      howToUse: previous.howToUse,
+      constraints: previous.constraints,
+      reviewState: previous.reviewState,
+      summaryProvenance: provenance,
+      searchText: previous.searchText,
+      ...(previous.amount ? { amount: previous.amount } : {}),
+    };
+    if (!previous.amount) delete merged.amount;
+    return merged;
+  });
 }
 
 export async function fetchText(

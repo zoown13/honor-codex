@@ -1,5 +1,5 @@
 import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
-import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
+import { GetCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it, vi } from "vitest";
 import { DynamoAppRepository } from "../src/shared/aws-repository.js";
 
@@ -37,7 +37,10 @@ describe("DynamoAppRepository review summaries", () => {
     const first = queryInput(send.mock.calls[0]![0]);
     const second = queryInput(send.mock.calls[1]![0]);
     expect(first.ProjectionExpression).toContain("#after.#benefitSource");
-    expect(first.ProjectionExpression).not.toMatch(/summary|evidence|searchText/);
+    expect(first.ProjectionExpression).toContain("#changedFields");
+    expect(first.ProjectionExpression).toContain("#after.#summaryProvenance");
+    expect(first.ProjectionExpression).toContain("#after.#reviewState");
+    expect(first.ProjectionExpression).not.toMatch(/#(?:evidence|searchText|matchingArticles)\\b|#after\\.#summary(?:,|$)/);
     expect(second.ExclusiveStartKey).toEqual({ pk: "CHANGE", sk: "CHG#later" });
   });
 });
@@ -92,7 +95,11 @@ describe("DynamoAppRepository review batch pages", () => {
 });
 
 describe("DynamoAppRepository bulk review progress", () => {
-  const operationItem = (approvedCount = 0, status: "IN_PROGRESS" | "COMPLETED" = "IN_PROGRESS") => ({
+  const operationItem = (
+    approvedCount = 0,
+    status: "IN_PROGRESS" | "COMPLETED" = "IN_PROGRESS",
+    reason = "INITIAL_BASELINE_BULK_APPROVAL",
+  ) => ({
     pk: "REVIEW_OPERATION",
     sk: "OP#11111111-1111-4111-8111-111111111111",
     entityType: "BULK_REVIEW_OPERATION",
@@ -103,7 +110,7 @@ describe("DynamoAppRepository bulk review progress", () => {
     expectedCount: 2,
     changeIds: ["chg:1", "chg:2"],
     reviewer: "pilot@example.com",
-    reason: "INITIAL_BASELINE_BULK_APPROVAL",
+    reason,
     status,
     approvedCount,
     createdAt: "2026-07-16T00:00:00.000Z",
@@ -143,6 +150,41 @@ describe("DynamoAppRepository bulk review progress", () => {
     expect(sleep).toHaveBeenCalledExactlyOnceWith(50);
   });
 
+  it("guards AI summary approval with immutable source hashes and AI provenance", async () => {
+    const transactions: TransactWriteCommand[] = [];
+    const send = vi.fn(async (command: unknown): Promise<unknown> => {
+      if (command instanceof GetCommand) {
+        return { Item: operationItem(0, "IN_PROGRESS", "AI_ORDINANCE_SUMMARY_BULK_APPROVAL") };
+      }
+      if (command instanceof TransactWriteCommand) {
+        transactions.push(command);
+        return {};
+      }
+      throw new Error("Unexpected command");
+    });
+    const repository = new DynamoAppRepository({ tableName: "pilot-table", client: fakeClient(send) });
+
+    const result = await repository.approveBulkReviewChunk(
+      "11111111-1111-4111-8111-111111111111",
+      "2026-07-16T00:00:01.000Z",
+      100,
+    );
+
+    expect(result).toMatchObject({ processedCount: 2, operation: { status: "COMPLETED" } });
+    const changeUpdate = transactions[0]?.input.TransactItems?.[1]?.Update;
+    expect(changeUpdate?.ConditionExpression).toContain("#after.#summaryProvenance.#kind = :ai");
+    expect(changeUpdate?.ConditionExpression).toContain(
+      "#before.#benefitSource.#contentHash = #after.#benefitSource.#contentHash",
+    );
+    expect(changeUpdate?.ConditionExpression).toContain(
+      "#after.#summaryProvenance.#sourceContentHash = #after.#benefitSource.#contentHash",
+    );
+    expect(changeUpdate?.ExpressionAttributeValues).toMatchObject({
+      ":update": "UPDATE", ":ai": "AI", ":sourceOnly": "SOURCE_ONLY",
+    });
+    expect(changeUpdate?.ExpressionAttributeValues).not.toHaveProperty(":add");
+  });
+
   it("returns committed progress when the transaction response is lost", async () => {
     let getCount = 0;
     const send = vi.fn(async (command: unknown): Promise<unknown> => {
@@ -164,6 +206,49 @@ describe("DynamoAppRepository bulk review progress", () => {
 
     expect(result).toMatchObject({ processedCount: 0, operation: { approvedCount: 2, status: "COMPLETED" } });
     expect(sleep).not.toHaveBeenCalled();
+  });
+});
+
+describe("DynamoAppRepository ordinance summary progress", () => {
+  it("returns the terminal job when another worker wins the completion race", async () => {
+    const running = {
+      pk: "ORDINANCE_SUMMARY", sk: "ACTIVE", entityType: "ORDINANCE_SUMMARY_JOB",
+      id: "aisum:test", fingerprint: "a".repeat(64), modelId: "global.amazon.nova-2-lite-v1:0",
+      status: "RUNNING", total: 1, queuedCount: 1, processedCount: 1, succeededCount: 1,
+      failedCount: 0, inputTokens: 900, outputTokens: 120, estimatedCostUsd: 0.01,
+      createdAt: "2026-07-16T00:00:00.000Z", updatedAt: "2026-07-16T00:00:01.000Z",
+    };
+    const completed = {
+      ...running, status: "COMPLETED", completedAt: "2026-07-16T00:00:02.000Z",
+    };
+    let getCount = 0;
+    const send = vi.fn(async (command: unknown): Promise<unknown> => {
+      if (command instanceof TransactWriteCommand) return {};
+      if (command instanceof GetCommand) {
+        getCount += 1;
+        return { Item: getCount === 1 ? running : completed };
+      }
+      if (command instanceof UpdateCommand) throw namedError("ConditionalCheckFailedException");
+      throw new Error("Unexpected command");
+    });
+    const repository = new DynamoAppRepository({ tableName: "pilot-table", client: fakeClient(send) });
+
+    const result = await repository.recordOrdinanceSummaryItem(
+      "aisum:test",
+      {
+        benefitId: "ord:1", status: "SUCCEEDED", inputTokens: 900, outputTokens: 120,
+        changeId: "chg:1",
+      },
+      "2026-07-16T00:00:02.000Z",
+    );
+
+    expect(result).toMatchObject({ status: "COMPLETED", processedCount: 1, succeededCount: 1 });
+    const transaction = transactionInput(send.mock.calls[0]![0]);
+    const progressUpdate = transaction.TransactItems?.[1]?.Update;
+    expect(progressUpdate?.UpdateExpression).toBe(
+      "SET updatedAt = :at ADD processedCount :one, succeededCount :succeeded, failedCount :failed, inputTokens :inputTokens, outputTokens :outputTokens",
+    );
+    expect(getCount).toBe(2);
   });
 });
 

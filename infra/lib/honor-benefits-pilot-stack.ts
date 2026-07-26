@@ -25,6 +25,7 @@ import * as events from "aws-cdk-lib/aws-events";
 import * as targets from "aws-cdk-lib/aws-events-targets";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as lambda from "aws-cdk-lib/aws-lambda";
+import * as lambdaEventSources from "aws-cdk-lib/aws-lambda-event-sources";
 import * as nodejs from "aws-cdk-lib/aws-lambda-nodejs";
 import * as logs from "aws-cdk-lib/aws-logs";
 import * as s3 from "aws-cdk-lib/aws-s3";
@@ -39,6 +40,7 @@ interface PilotFunctionOptions {
   readonly environment: Record<string, string>;
   readonly memorySize?: number;
   readonly timeout?: Duration;
+  readonly reservedConcurrentExecutions?: number;
 }
 
 /**
@@ -159,6 +161,17 @@ export class HonorBenefitsPilotStack extends Stack {
       allowedValues: ["true", "false"],
       description: "One-shot publish guard. Enable only while invoking the success-gated publish Lambda."
     });
+    const bedrockSummaryModelId = new CfnParameter(this, "BedrockSummaryModelId", {
+      type: "String",
+      default: "global.amazon.nova-2-lite-v1:0",
+      description: "Bedrock inference profile used for owner-approved ordinance summaries."
+    });
+    const aiSummaryMaxJobUsd = new CfnParameter(this, "AiSummaryMaxJobUsd", {
+      type: "String",
+      default: "5",
+      allowedPattern: "[0-9]+(\\.[0-9]{1,2})?",
+      description: "Hard USD estimate ceiling for a single owner-approved ordinance summary job."
+    });
     const mmaFacilitiesUrl = new CfnParameter(this, "MmaFacilitiesUrl", {
       type: "String",
       default: "https://open.mma.go.kr/caisGGGS/bymmgListAjaxJsonCall.json"
@@ -272,6 +285,15 @@ export class HonorBenefitsPilotStack extends Stack {
       encryption: sqs.QueueEncryption.SQS_MANAGED,
       retentionPeriod: Duration.days(14),
       enforceSSL: true,
+      removalPolicy: RemovalPolicy.RETAIN
+    });
+
+    const ordinanceSummaryQueue = new sqs.Queue(this, "OrdinanceSummaryQueue", {
+      encryption: sqs.QueueEncryption.SQS_MANAGED,
+      visibilityTimeout: Duration.minutes(3),
+      retentionPeriod: Duration.days(4),
+      enforceSSL: true,
+      deadLetterQueue: { queue: dlq, maxReceiveCount: 3 },
       removalPolicy: RemovalPolicy.RETAIN
     });
 
@@ -545,6 +567,9 @@ export class HonorBenefitsPilotStack extends Stack {
         architecture: lambda.Architecture.ARM_64,
         memorySize: options.memorySize ?? 256,
         timeout: options.timeout ?? Duration.seconds(30),
+        ...(options.reservedConcurrentExecutions === undefined
+          ? {}
+          : { reservedConcurrentExecutions: options.reservedConcurrentExecutions }),
         logGroup,
         environment: options.environment,
         deadLetterQueue: dlq,
@@ -645,6 +670,44 @@ export class HonorBenefitsPilotStack extends Stack {
       memorySize: 512,
       timeout: Duration.minutes(15)
     });
+    const publishControlFunction = createFunction("PublishControl", {
+      entry: "publish-control.ts",
+      environment: {
+        ...repositoryEnvironment,
+        ...datasetEnvironment,
+        ADMIN_EMAILS: adminEmails.valueAsString,
+        PILOT_ADMIN_TOKEN: pilotAdminToken.valueAsString,
+        PUBLISH_FUNCTION_NAME: publishFunction.functionName
+      },
+      memorySize: 512
+    });
+    const ordinanceSummaryControlFunction = createFunction("OrdinanceSummaryControl", {
+      entry: "ordinance-summary-control.ts",
+      environment: {
+        ...repositoryEnvironment,
+        ...datasetEnvironment,
+        ADMIN_EMAILS: adminEmails.valueAsString,
+        PILOT_ADMIN_TOKEN: pilotAdminToken.valueAsString,
+        ORDINANCE_SUMMARY_QUEUE_URL: ordinanceSummaryQueue.queueUrl,
+        BEDROCK_SUMMARY_MODEL_ID: bedrockSummaryModelId.valueAsString,
+        AI_SUMMARY_MAX_JOB_USD: aiSummaryMaxJobUsd.valueAsString,
+        AI_SUMMARY_INPUT_USD_PER_MILLION: "0.30",
+        AI_SUMMARY_OUTPUT_USD_PER_MILLION: "2.50"
+      },
+      memorySize: 512
+    });
+    const ordinanceSummaryWorkerFunction = createFunction("OrdinanceSummaryWorker", {
+      entry: "ordinance-summary-worker.ts",
+      environment: {
+        ...repositoryEnvironment,
+        ...datasetEnvironment,
+        ORDINANCE_SUMMARY_QUEUE_URL: ordinanceSummaryQueue.queueUrl,
+        BEDROCK_SUMMARY_MODEL_ID: bedrockSummaryModelId.valueAsString
+      },
+      memorySize: 512,
+      timeout: Duration.minutes(2),
+      reservedConcurrentExecutions: 2
+    });
     const weeklyNotificationsFunction = createFunction("WeeklyNotifications", {
       entry: "weekly-notifications.ts",
       environment: {
@@ -671,6 +734,9 @@ export class HonorBenefitsPilotStack extends Stack {
       pushSubscriptionsFunction,
       adminReviewsFunction,
       publishFunction,
+      publishControlFunction,
+      ordinanceSummaryControlFunction,
+      ordinanceSummaryWorkerFunction,
       weeklyNotificationsFunction
     ]) {
       table.grantReadWriteData(apiFunction);
@@ -680,7 +746,37 @@ export class HonorBenefitsPilotStack extends Stack {
     // committed atomically; keep the extra permission scoped to this table and
     // the owner-review Lambda only.
     table.grant(adminReviewsFunction, "dynamodb:TransactWriteItems");
+    table.grant(ordinanceSummaryWorkerFunction, "dynamodb:TransactWriteItems");
     dataBucket.grantReadWrite(publishFunction);
+    dataBucket.grantRead(publishControlFunction);
+    dataBucket.grantRead(ordinanceSummaryControlFunction);
+    dataBucket.grantRead(ordinanceSummaryWorkerFunction);
+    publishFunction.grantInvoke(publishControlFunction);
+    ordinanceSummaryQueue.grantSendMessages(ordinanceSummaryControlFunction);
+    ordinanceSummaryQueue.grantSendMessages(ordinanceSummaryWorkerFunction);
+    ordinanceSummaryQueue.grantConsumeMessages(ordinanceSummaryWorkerFunction);
+    ordinanceSummaryWorkerFunction.addEventSource(new lambdaEventSources.SqsEventSource(ordinanceSummaryQueue, {
+      batchSize: 1,
+      reportBatchItemFailures: true
+    }));
+    ordinanceSummaryWorkerFunction.addToRolePolicy(new iam.PolicyStatement({
+      actions: ["bedrock:InvokeModel"],
+      resources: [
+        this.formatArn({
+          service: "bedrock",
+          region: "*",
+          resource: "inference-profile",
+          resourceName: bedrockSummaryModelId.valueAsString
+        }),
+        this.formatArn({
+          service: "bedrock",
+          region: "*",
+          account: "",
+          resource: "foundation-model",
+          resourceName: "amazon.nova-2-lite-v1:0"
+        })
+      ]
+    }));
     userPool.grant(pushSubscriptionsFunction, "cognito-idp:AdminDeleteUser");
     userPool.grant(authOtpFunction, "cognito-idp:AdminCreateUser");
     userPool.grant(authOtpFunction, "cognito-idp:AdminAddUserToGroup");
@@ -808,7 +904,11 @@ export class HonorBenefitsPilotStack extends Stack {
     );
     const publishIntegration = new integrations.HttpLambdaIntegration(
       "PublishIntegration",
-      publishFunction
+      publishControlFunction
+    );
+    const ordinanceSummaryIntegration = new integrations.HttpLambdaIntegration(
+      "OrdinanceSummaryIntegration",
+      ordinanceSummaryControlFunction
     );
     const authOtpStartRoutes = httpApi.addRoutes({
       path: "/v1/auth/otp/start",
@@ -852,7 +952,7 @@ export class HonorBenefitsPilotStack extends Stack {
     });
     httpApi.addRoutes({
       path: "/v1/admin/reviews/{reviewId}",
-      methods: [apigwv2.HttpMethod.POST],
+      methods: [apigwv2.HttpMethod.GET, apigwv2.HttpMethod.POST],
       integration: adminIntegration,
       authorizer: jwtAuthorizer
     });
@@ -881,7 +981,7 @@ export class HonorBenefitsPilotStack extends Stack {
     });
     httpApi.addRoutes({
       path: "/v1/pilot-admin/reviews/{reviewId}",
-      methods: [apigwv2.HttpMethod.POST],
+      methods: [apigwv2.HttpMethod.GET, apigwv2.HttpMethod.POST],
       integration: adminIntegration
     });
     httpApi.addRoutes({
@@ -901,14 +1001,25 @@ export class HonorBenefitsPilotStack extends Stack {
     });
     httpApi.addRoutes({
       path: "/v1/admin/publish",
-      methods: [apigwv2.HttpMethod.POST],
+      methods: [apigwv2.HttpMethod.GET, apigwv2.HttpMethod.POST],
       integration: publishIntegration,
       authorizer: jwtAuthorizer
     });
     httpApi.addRoutes({
       path: "/v1/pilot-admin/publish",
-      methods: [apigwv2.HttpMethod.POST],
+      methods: [apigwv2.HttpMethod.GET, apigwv2.HttpMethod.POST],
       integration: publishIntegration
+    });
+    httpApi.addRoutes({
+      path: "/v1/admin/ordinance-summaries",
+      methods: [apigwv2.HttpMethod.GET, apigwv2.HttpMethod.POST],
+      integration: ordinanceSummaryIntegration,
+      authorizer: jwtAuthorizer
+    });
+    httpApi.addRoutes({
+      path: "/v1/pilot-admin/ordinance-summaries",
+      methods: [apigwv2.HttpMethod.GET, apigwv2.HttpMethod.POST],
+      integration: ordinanceSummaryIntegration
     });
 
     const apiAccessLogs = new logs.LogGroup(this, "HttpApiAccessLogs", {

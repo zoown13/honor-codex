@@ -1,6 +1,6 @@
 "use client";
 
-import { publicOrdinanceUrl } from "@honor/core";
+import { publicOrdinanceUrl, type BenefitChange } from "@honor/core";
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import {
   ApiError,
@@ -11,6 +11,7 @@ import {
   createReviewOperationId,
   getActiveReviewOperation,
   getReviewBatchPage,
+  getReviewChange,
   getReviewSummary,
   isApiError,
   saveActiveReviewOperation,
@@ -22,6 +23,9 @@ import {
   type ReviewSummaryGroup
 } from "../lib/api";
 import { formatDate } from "../lib/format";
+import { AdminOrdinanceSummaryPanel } from "./admin-ordinance-summary-panel";
+import { AdminPublishPanel } from "./admin-publish-panel";
+import { AdminReviewDetail } from "./admin-review-detail";
 
 const REVIEW_PAGE_SIZE = 25;
 
@@ -75,6 +79,8 @@ export function AdminPanel() {
   const [confirmation, setConfirmation] = useState("");
   const [activeOperation, setActiveOperation] = useState<ActiveReviewOperation | null>(null);
   const [busyOperationId, setBusyOperationId] = useState("");
+  const [detailChange, setDetailChange] = useState<BenefitChange | null>(null);
+  const [detailLoadingId, setDetailLoadingId] = useState("");
 
   const loadSummary = useCallback(async () => {
     setLoading(true);
@@ -111,16 +117,20 @@ export function AdminPanel() {
   }, [loadSummary]);
 
   useEffect(() => {
-    if (!dialogGroup && !reviewListGroup) return;
+    if (!dialogGroup && !reviewListGroup && !detailChange) return;
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key !== "Escape" || busyOperationId) return;
+      if (detailChange) {
+        setDetailChange(null);
+        return;
+      }
       setDialogGroup(null);
       setReviewListGroup(null);
       setReviewPage(null);
     };
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [busyOperationId, dialogGroup, reviewListGroup]);
+  }, [busyOperationId, detailChange, dialogGroup, reviewListGroup]);
 
   const totalPending = useMemo(
     () => unclassifiedCount + groups.reduce((total, group) => total + group.count, 0),
@@ -171,6 +181,18 @@ export function AdminPanel() {
   function closeReviewList() {
     setReviewListGroup(null);
     setReviewPage(null);
+  }
+
+  async function openReviewDetail(changeId: string) {
+    setDetailLoadingId(changeId);
+    setError("");
+    try {
+      setDetailChange(await getReviewChange(changeId));
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "정제 상세를 불러오지 못했습니다.");
+    } finally {
+      setDetailLoadingId("");
+    }
   }
 
   function previousReviewPage() {
@@ -321,7 +343,7 @@ export function AdminPanel() {
 
       <div className="admin-rule admin-rule--locked" role="note">
         <strong>승인과 게시는 분리되어 있습니다</strong>
-        <span>여기서는 검수 상태만 승인합니다. 게시 API도 같은 관리자 암호를 사용하지만 운영 잠금을 별도로 해제하기 전에는 실제 서비스 데이터가 바뀌지 않습니다.</span>
+        <span>검수 승인 후 아래 게시 영역에서 원천과 건수를 다시 확인해야 실제 서비스 데이터와 Amplify 배포가 바뀝니다.</span>
       </div>
 
       {activeOperation ? (
@@ -358,6 +380,11 @@ export function AdminPanel() {
         </p>
       ) : null}
 
+      <div className="admin-operations">
+        <AdminPublishPanel onPublished={loadSummary} />
+        <AdminOrdinanceSummaryPanel onCompleted={loadSummary} />
+      </div>
+
       <div className="review-source-list" aria-busy={loading}>
         {REVIEW_SOURCES.map((source) => {
           const sourceGroups = groups.filter((group) => group.source === source);
@@ -384,7 +411,7 @@ export function AdminPanel() {
                           <time dateTime={group.detectedAt}>{formatDate(group.detectedAt)}</time>
                         </div>
                         <span className={`tag ${group.eligible ? "tag--safe" : "tag--danger"}`}>
-                          {group.eligible ? "초기 신규 데이터" : "개별 검수 필요"}
+                          {group.eligible ? (group.approvalKind === "AI_SUMMARY" ? "AI 정제 일괄 검수" : "초기 신규 데이터") : "개별 검수 필요"}
                         </span>
                       </div>
 
@@ -485,11 +512,19 @@ export function AdminPanel() {
                           <strong>{benefit?.title ?? change.benefitId}</strong>
                           <small>{benefit?.provider ?? "제공기관 미상"}</small>
                         </div>
-                        {benefit?.source.url ? (
-                          <a href={reviewSourceUrl(benefit)} target="_blank" rel="noreferrer" aria-label={`${benefit.title} 공식 원문 새 창에서 확인`}>
-                            원문 ↗
-                          </a>
-                        ) : <span>원문 없음</span>}
+                        <div className="review-list__actions">
+                          <button
+                            className="secondary-button"
+                            type="button"
+                            disabled={detailLoadingId === change.id}
+                            onClick={() => void openReviewDetail(change.id)}
+                          >
+                            {detailLoadingId === change.id ? "불러오는 중…" : benefit?.summaryProvenance ? "AI 핵심 보기" : "검수 상세"}
+                          </button>
+                          {benefit?.source.url ? (
+                            <a href={reviewSourceUrl(benefit)} target="_blank" rel="noreferrer" aria-label={`${benefit.title} 공식 원문 새 창에서 확인`}>원문 ↗</a>
+                          ) : <span>원문 없음</span>}
+                        </div>
                       </article>
                     );
                   })}
@@ -505,6 +540,8 @@ export function AdminPanel() {
         </div>
       ) : null}
 
+      {detailChange ? <AdminReviewDetail change={detailChange} onClose={() => setDetailChange(null)} /> : null}
+
       {dialogGroup ? (
         <div className="review-dialog-backdrop">
           <section
@@ -518,12 +555,12 @@ export function AdminPanel() {
             <span className="eyebrow">되돌리기 전 재검수 필요</span>
             <h3 id="review-dialog-title">{dialogGroup.label} {dialogGroup.count.toLocaleString("ko-KR")}건 승인</h3>
             <p id="review-dialog-description">
-              서버가 원천·수집시각·건수·지문을 다시 확인한 뒤 최대 99건씩 안전하게 처리합니다. 이 승인은 게시를 시작하지 않습니다.
+              서버가 원천·수집시각·건수·지문을 다시 확인한 뒤 최대 99건씩 안전하게 처리합니다. AI 정제 결과도 동일하게 100건씩 처리하며, 이 승인은 게시를 시작하지 않습니다.
             </p>
             <form onSubmit={beginBulkReview}>
               <label className="review-acknowledgement">
                 <input type="checkbox" checked={acknowledged} onChange={(event) => setAcknowledged(event.target.checked)} />
-                <span>표본과 집계를 확인했으며, 이 원천의 초기 신규 데이터 전체를 같은 기준으로 승인함을 이해했습니다.</span>
+                <span>표본과 핵심 정제 내용을 확인했으며, 이 검수 그룹 전체를 같은 기준으로 승인함을 이해했습니다.</span>
               </label>
               <label className="review-confirmation" htmlFor="review-confirmation-input">
                 <span>아래 문구를 정확히 입력하세요.</span>

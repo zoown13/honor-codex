@@ -147,7 +147,7 @@ describe("HonorBenefitsPilotStack", () => {
       AllowedOAuthFlows: Match.absent()
     });
     template.resourceCountIs("AWS::ApiGatewayV2::Authorizer", 1);
-    template.resourceCountIs("AWS::ApiGatewayV2::Route", 21);
+    template.resourceCountIs("AWS::ApiGatewayV2::Route", 29);
     template.hasResourceProperties("AWS::ApiGatewayV2::Route", {
       RouteKey: "POST /v1/auth/otp/start",
       AuthorizationType: "NONE"
@@ -183,6 +183,18 @@ describe("HonorBenefitsPilotStack", () => {
     template.hasResourceProperties("AWS::ApiGatewayV2::Route", {
       RouteKey: "POST /v1/pilot-admin/publish",
       AuthorizationType: "NONE"
+    });
+    template.hasResourceProperties("AWS::ApiGatewayV2::Route", {
+      RouteKey: "GET /v1/pilot-admin/publish",
+      AuthorizationType: "NONE"
+    });
+    template.hasResourceProperties("AWS::ApiGatewayV2::Route", {
+      RouteKey: "GET /v1/pilot-admin/ordinance-summaries",
+      AuthorizationType: "NONE"
+    });
+    template.hasResourceProperties("AWS::ApiGatewayV2::Route", {
+      RouteKey: "POST /v1/admin/ordinance-summaries",
+      AuthorizationType: "JWT"
     });
     template.hasResourceProperties("AWS::ApiGatewayV2::Api", {
       CorsConfiguration: {
@@ -238,8 +250,8 @@ describe("HonorBenefitsPilotStack", () => {
     expect(normalizedDependsOn).toEqual(expect.arrayContaining(otpRouteLogicalIds));
   });
 
-  it("runs nine Node.js 24 ARM Lambdas with schedules, DLQs and alarms", () => {
-    template.resourceCountIs("AWS::Lambda::Function", 9);
+  it("runs twelve Node.js 24 ARM Lambdas with async publishing and bounded AI workers", () => {
+    template.resourceCountIs("AWS::Lambda::Function", 12);
     template.allResourcesProperties("AWS::Lambda::Function", {
       Runtime: "nodejs24.x",
       Architectures: ["arm64"],
@@ -289,6 +301,23 @@ describe("HonorBenefitsPilotStack", () => {
       ({ Properties }) => Properties.FunctionName === "honor-pilot-publish"
     );
     expect(publishLambda?.Properties.Timeout).toBe(900);
+    expect(keys("honor-pilot-publish-control")).toEqual([
+      "ADMIN_EMAILS", "DATA_BUCKET", "DATA_PREFIX", "PILOT_ADMIN_TOKEN",
+      "PUBLISH_FUNCTION_NAME", "RAW_PREFIX", "TABLE_NAME"
+    ]);
+    expect(keys("honor-pilot-ordinance-summary-control")).toEqual([
+      "ADMIN_EMAILS", "AI_SUMMARY_INPUT_USD_PER_MILLION", "AI_SUMMARY_MAX_JOB_USD",
+      "AI_SUMMARY_OUTPUT_USD_PER_MILLION", "BEDROCK_SUMMARY_MODEL_ID", "DATA_BUCKET",
+      "DATA_PREFIX", "ORDINANCE_SUMMARY_QUEUE_URL", "PILOT_ADMIN_TOKEN", "RAW_PREFIX", "TABLE_NAME"
+    ]);
+    expect(keys("honor-pilot-ordinance-summary-worker")).toEqual([
+      "BEDROCK_SUMMARY_MODEL_ID", "DATA_BUCKET", "DATA_PREFIX",
+      "ORDINANCE_SUMMARY_QUEUE_URL", "RAW_PREFIX", "TABLE_NAME"
+    ]);
+    const summaryWorker = lambdaResources.find(
+      ({ Properties }) => Properties.FunctionName === "honor-pilot-ordinance-summary-worker"
+    );
+    expect(summaryWorker?.Properties.Timeout).toBe(120);
     expect(keys("honor-pilot-weekly-notifications")).toEqual([
       "PILOT_SLUG", "PUBLIC_APP_URL", "SES_FROM_EMAIL", "TABLE_NAME",
       "VAPID_PRIVATE_KEY", "VAPID_PUBLIC_KEY", "VAPID_SUBJECT"
@@ -312,6 +341,11 @@ describe("HonorBenefitsPilotStack", () => {
         };
       };
     }>;
+    const bedrockPolicy = iamPolicies.find((policy) => JSON.stringify(policy).includes("bedrock:InvokeModel"));
+    expect(bedrockPolicy).toBeDefined();
+    expect(JSON.stringify(bedrockPolicy)).toContain("foundation-model");
+    expect(JSON.stringify(bedrockPolicy)).toContain("inference-profile");
+
     const sesStatement = iamPolicies
       .flatMap(({ Properties }) => Properties.PolicyDocument.Statement)
       .find(({ Action }) => Array.isArray(Action) && Action.includes("ses:SendEmail"));
@@ -362,8 +396,8 @@ describe("HonorBenefitsPilotStack", () => {
     expect(JSON.stringify(amplifyDeploymentStatement?.Resource)).toContain("AmplifyApp");
 
     template.resourceCountIs("AWS::Events::Rule", 5);
-    template.resourceCountIs("AWS::CloudWatch::Alarm", 10);
-    template.resourceCountIs("AWS::Logs::LogGroup", 10);
+    template.resourceCountIs("AWS::CloudWatch::Alarm", 13);
+    template.resourceCountIs("AWS::Logs::LogGroup", 13);
     template.allResourcesProperties("AWS::Logs::LogGroup", {
       RetentionInDays: 14
     });

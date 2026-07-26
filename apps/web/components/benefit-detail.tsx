@@ -58,6 +58,7 @@ export function BenefitDetail({ benefit, onClose, onFollow }: BenefitDetailProps
     benefit.contact?.phone,
     benefit.contact?.website
   ].filter((value): value is string => Boolean(value));
+  const isAiSummary = benefit.summaryProvenance?.kind === "AI";
 
   return (
     <div className="detail-overlay" role="presentation" onMouseDown={(event) => {
@@ -89,7 +90,8 @@ export function BenefitDetail({ benefit, onClose, onFollow }: BenefitDetailProps
             </span>
           </div>
           <h2 id="benefit-detail-title">{benefit.title}</h2>
-          <p>{benefit.summary}</p>
+          <p>{isAiSummary ? "AI가 관련 조항에서 핵심 내용을 항목별로 정리했습니다." : benefit.summary}</p>
+          {isAiSummary ? <span className="ai-summary-badge">AI 정제 · 운영자 검수 대상</span> : null}
           <div className="detail-sheet__quickfacts">
             <span>{benefit.provider}</span>
             <span>{benefit.displayAddress ?? "전국"}</span>
@@ -101,7 +103,7 @@ export function BenefitDetail({ benefit, onClose, onFollow }: BenefitDetailProps
           <DetailSection title="누가 받을 수 있나요" items={benefit.eligibility} />
           <DetailSection
             title="혜택"
-            items={benefit.amount ? [benefit.amount] : [benefit.summary]}
+            items={benefit.amount ? [benefit.amount, ...(isAiSummary ? [benefit.summary] : [])] : [benefit.summary]}
           />
           <DetailSection title="준비물" items={benefit.requiredProof} />
           <DetailSection title="이용 방법" items={benefit.howToUse} />
@@ -133,14 +135,17 @@ export function BenefitDetail({ benefit, onClose, onFollow }: BenefitDetailProps
             <a href={benefit.source.url} target="_blank" rel="noreferrer">
               {benefit.evidence[0]?.label ?? "공식 출처에서 확인"} <span aria-hidden="true">↗</span>
             </a>
-            {benefit.evidence.map((evidence) => (
-              <div className="evidence" key={`${evidence.sourceId}-${evidence.article ?? "source"}`}>
-                {evidence.article ? <strong>{evidence.article}</strong> : null}
-                {evidence.excerpt ? <p>{evidence.excerpt}</p> : null}
-              </div>
-            ))}
+            <details className="evidence-details">
+              <summary>근거 문구 보기</summary>
+              {benefit.evidence.map((evidence) => (
+                <div className="evidence" key={`${evidence.sourceId}-${evidence.article ?? "source"}`}>
+                  {evidence.article ? <strong>{evidence.article}</strong> : null}
+                  {evidence.excerpt ? <p>{evidence.excerpt}</p> : null}
+                </div>
+              ))}
+            </details>
             <p className="source-disclaimer">
-              이 서비스의 요약보다 공식 원문과 시설 안내가 우선합니다.
+              {isAiSummary ? "AI 정제 내용은 참고용이며, 운영자 검수 후에도 공식 원문과 담당부서 안내가 우선합니다." : "이 서비스의 요약보다 공식 원문과 시설 안내가 우선합니다."}
             </p>
           </section>
 

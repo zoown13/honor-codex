@@ -73,6 +73,56 @@ export interface PublicationOperation {
   error?: string;
 }
 
+export interface OrdinanceSummary {
+  summary: string;
+  eligibility: string[];
+  benefitKind: Benefit["benefitKind"];
+  amount?: string;
+  requiredProof: string[];
+  howToUse: string[];
+  constraints: string[];
+}
+
+export interface OrdinanceSummaryCache {
+  cacheKey: string;
+  modelId: string;
+  sourceContentHash: string;
+  value: OrdinanceSummary;
+  inputTokens: number;
+  outputTokens: number;
+  createdAt: string;
+}
+
+export interface OrdinanceSummaryJob {
+  id: string;
+  fingerprint: string;
+  modelId: string;
+  status: "QUEUED" | "RUNNING" | "COMPLETED" | "COMPLETED_WITH_ERRORS" | "FAILED";
+  total: number;
+  queuedCount: number;
+  processedCount: number;
+  succeededCount: number;
+  failedCount: number;
+  inputTokens: number;
+  outputTokens: number;
+  estimatedCostUsd: number;
+  createdAt: string;
+  updatedAt: string;
+  startedAt?: string;
+  completedAt?: string;
+  failedAt?: string;
+  error?: string;
+}
+
+export interface OrdinanceSummaryItemResult {
+  benefitId: string;
+  status: "SUCCEEDED" | "FAILED";
+  inputTokens: number;
+  outputTokens: number;
+  changeId?: string;
+  error?: string;
+}
+
 export interface BeginPublicationResult {
   operation: PublicationOperation;
   created: boolean;
@@ -133,6 +183,17 @@ export interface AppRepository {
   completePublication(operationId: string, at: string): Promise<PublicationOperation>;
   failPublication(operationId: string, at: string, error: string): Promise<void>;
   markChangesPublished(changeIds: readonly string[], at: string, operationId: string): Promise<void>;
+  getOrdinanceSummaryJob(): Promise<OrdinanceSummaryJob | undefined>;
+  beginOrdinanceSummaryJob(value: OrdinanceSummaryJob): Promise<OrdinanceSummaryJob>;
+  markOrdinanceSummaryJobRunning(jobId: string, queuedCount: number, at: string): Promise<OrdinanceSummaryJob>;
+  failOrdinanceSummaryJob(jobId: string, at: string, error: string): Promise<void>;
+  getOrdinanceSummaryCache(cacheKey: string): Promise<OrdinanceSummaryCache | undefined>;
+  putOrdinanceSummaryCache(value: OrdinanceSummaryCache): Promise<void>;
+  recordOrdinanceSummaryItem(
+    jobId: string,
+    result: OrdinanceSummaryItemResult,
+    at: string,
+  ): Promise<OrdinanceSummaryJob>;
   reserveDelivery(value: DeliveryReservation): Promise<boolean>;
   finishDelivery(userId: string, key: string, status: "SENT" | "FAILED", at: string, error?: string): Promise<void>;
 }

@@ -46,7 +46,7 @@ export interface CreateSubscriptionInput {
   channels: NotificationChannel[];
 }
 
-export type ReviewListBenefit = Pick<Benefit, "id" | "type" | "title" | "provider" | "source">;
+export type ReviewListBenefit = Pick<Benefit, "id" | "type" | "title" | "provider" | "source" | "summaryProvenance">;
 export type ReviewListChange = Pick<
   BenefitChange,
   "id" | "benefitId" | "action" | "risk" | "status" | "detectedAt" | "source"
@@ -60,6 +60,7 @@ export interface ReviewSummaryGroup {
   count: number;
   fingerprint: string;
   eligible: boolean;
+  approvalKind?: "INITIAL_BASELINE" | "AI_SUMMARY";
   ineligibleReason?: string;
   confirmationPhrase: string;
   actionCounts: Record<ChangeAction, number>;
@@ -107,6 +108,63 @@ export interface ActiveReviewOperation extends BulkReviewInput {
   approvedCount: number;
   remainingCount: number;
   startedAt: string;
+}
+
+export interface PublicationOperationView {
+  id: string;
+  publishSources: ReviewSource[];
+  status: "PREPARING" | "STAGED" | "DEPLOYING" | "DEPLOYED" | "COMPLETED" | "FAILED";
+  changeIds: string[];
+  createdAt: string;
+  updatedAt: string;
+  deploymentJobId?: string;
+  completedAt?: string;
+  failedAt?: string;
+  error?: string;
+}
+
+export interface PublishStatusResponse {
+  sources: Record<ReviewSource, { pending: number; approved: number }>;
+  approvedCount: number;
+  pendingCount: number;
+  confirmationPhrase: string;
+  canPublish: boolean;
+  operation?: PublicationOperationView;
+}
+
+export interface OrdinanceSummaryJobView {
+  id: string;
+  modelId: string;
+  status: "QUEUED" | "RUNNING" | "COMPLETED" | "COMPLETED_WITH_ERRORS" | "FAILED";
+  total: number;
+  queuedCount: number;
+  processedCount: number;
+  succeededCount: number;
+  failedCount: number;
+  inputTokens: number;
+  outputTokens: number;
+  estimatedCostUsd: number;
+  createdAt: string;
+  updatedAt: string;
+  completedAt?: string;
+  failedAt?: string;
+  error?: string;
+}
+
+export interface OrdinanceSummaryStatusResponse {
+  modelId: string;
+  job?: OrdinanceSummaryJobView;
+  estimate: {
+    itemCount: number;
+    estimatedInputTokens: number;
+    estimatedOutputTokens: number;
+    estimatedCostUsd: number;
+  };
+  actualCostUsd: number;
+  confirmationPhrase: string;
+  ordinanceChangesAwaitingPublish: number;
+  maxJobCostUsd: number;
+  canStart: boolean;
 }
 
 export class ApiError extends Error {
@@ -430,6 +488,15 @@ export async function getReviewSummary(): Promise<ReviewSummaryResponse> {
   return mockReviewSummary();
 }
 
+export async function getReviewChange(changeId: string): Promise<BenefitChange> {
+  if (!IS_MOCK_API) {
+    return pilotAdminRequest<BenefitChange>(`/v1/pilot-admin/reviews/${encodeURIComponent(changeId)}`);
+  }
+  const change = storedChanges().find((item) => item.id === changeId);
+  if (!change) throw new ApiError(404, "검수 변경을 찾을 수 없습니다.");
+  return change;
+}
+
 export async function getReviewBatchPage(
   batch: Pick<ReviewSummaryGroup, "batchId" | "source" | "detectedAt" | "count">,
   cursor?: string,
@@ -532,6 +599,121 @@ export async function approveReviewChunk(input: BulkReviewInput): Promise<BulkRe
     remainingCount,
     complete
   };
+}
+
+export async function getPublishStatus(): Promise<PublishStatusResponse> {
+  if (!IS_MOCK_API) return pilotAdminRequest<PublishStatusResponse>("/v1/pilot-admin/publish");
+  const changes = storedChanges();
+  const sources = Object.fromEntries(REVIEW_SOURCES.map((source) => {
+    const scoped = changes.filter((change) => reviewSource(change) === source);
+    return [source, {
+      pending: scoped.filter((change) => change.status === "PENDING").length,
+      approved: scoped.filter((change) => change.status === "APPROVED" || change.status === "AUTO_APPROVED").length
+    }];
+  })) as PublishStatusResponse["sources"];
+  const approvedCount = Object.values(sources).reduce((total, value) => total + value.approved, 0);
+  const pendingCount = Object.values(sources).reduce((total, value) => total + value.pending, 0);
+  return {
+    sources,
+    approvedCount,
+    pendingCount,
+    confirmationPhrase: `PUBLISH ${approvedCount}`,
+    canPublish: approvedCount > 0 && pendingCount === 0,
+    ...readJson<{ operation?: PublicationOperationView }>("honor-pilot-publish-operation", {})
+  };
+}
+
+export async function startPublish(
+  sources: ReviewSource[],
+  confirmation: string,
+): Promise<{ message: string; operation: PublicationOperationView }> {
+  if (!IS_MOCK_API) {
+    return pilotAdminRequest("/v1/pilot-admin/publish", {
+      method: "POST",
+      body: JSON.stringify({ sources, confirmation })
+    });
+  }
+  const selected = storedChanges().filter((change) => {
+    const source = reviewSource(change);
+    return source !== undefined && sources.includes(source)
+      && (change.status === "APPROVED" || change.status === "AUTO_APPROVED");
+  });
+  if (confirmation !== `PUBLISH ${selected.length}`) throw new ApiError(400, "확인 문구가 일치하지 않습니다.");
+  const now = new Date().toISOString();
+  writeJson(CHANGES_KEY, storedChanges().map((change) => selected.some((item) => item.id === change.id)
+    ? { ...change, status: "PUBLISHED" as const, publishedAt: now }
+    : change));
+  const operation: PublicationOperationView = {
+    id: makeId("pub"),
+    publishSources: sources,
+    status: "COMPLETED",
+    changeIds: selected.map((change) => change.id),
+    createdAt: now,
+    updatedAt: now,
+    completedAt: now
+  };
+  writeJson("honor-pilot-publish-operation", { operation });
+  return { message: "게시를 완료했습니다.", operation };
+}
+
+export async function getOrdinanceSummaryStatus(): Promise<OrdinanceSummaryStatusResponse> {
+  if (!IS_MOCK_API) {
+    return pilotAdminRequest<OrdinanceSummaryStatusResponse>("/v1/pilot-admin/ordinance-summaries");
+  }
+  const ordinances = benefits.filter((benefit) => benefit.type === "ORDINANCE" && !benefit.summaryProvenance);
+  const estimate = {
+    itemCount: ordinances.length,
+    estimatedInputTokens: ordinances.length * 1_000,
+    estimatedOutputTokens: ordinances.length * 600,
+    estimatedCostUsd: ordinances.length ? 0.01 : 0
+  };
+  const stored = readJson<{ job?: OrdinanceSummaryJobView }>("honor-pilot-summary-job", {});
+  const ordinanceChangesAwaitingPublish = storedChanges().filter((change) =>
+    reviewSource(change) === "LAW_ORDINANCES" && ["PENDING", "APPROVED", "AUTO_APPROVED"].includes(change.status)
+  ).length;
+  return {
+    modelId: "global.amazon.nova-2-lite-v1:0",
+    ...stored,
+    estimate,
+    actualCostUsd: stored.job ? stored.job.estimatedCostUsd : 0,
+    confirmationPhrase: `SUMMARIZE ${estimate.itemCount}`,
+    ordinanceChangesAwaitingPublish,
+    maxJobCostUsd: 5,
+    canStart: estimate.itemCount > 0 && !stored.job && ordinanceChangesAwaitingPublish === 0
+  };
+}
+
+export async function startOrdinanceSummary(
+  confirmation: string,
+  maxCostUsd: number,
+): Promise<{ message: string; job: OrdinanceSummaryJobView }> {
+  if (!IS_MOCK_API) {
+    return pilotAdminRequest("/v1/pilot-admin/ordinance-summaries", {
+      method: "POST",
+      body: JSON.stringify({ confirmation, maxCostUsd })
+    });
+  }
+  const status = await getOrdinanceSummaryStatus();
+  if (confirmation !== status.confirmationPhrase) throw new ApiError(400, "확인 문구가 일치하지 않습니다.");
+  const now = new Date().toISOString();
+  const job: OrdinanceSummaryJobView = {
+    id: makeId("aisum"),
+    modelId: status.modelId,
+    status: "COMPLETED",
+    total: status.estimate.itemCount,
+    queuedCount: status.estimate.itemCount,
+    processedCount: status.estimate.itemCount,
+    succeededCount: status.estimate.itemCount,
+    failedCount: 0,
+    inputTokens: status.estimate.estimatedInputTokens,
+    outputTokens: status.estimate.estimatedOutputTokens,
+    estimatedCostUsd: Math.min(maxCostUsd, status.estimate.estimatedCostUsd),
+    createdAt: now,
+    updatedAt: now,
+    completedAt: now
+  };
+  writeJson("honor-pilot-summary-job", { job });
+  return { message: "조례 AI 정제를 완료했습니다.", job };
 }
 
 export function createReviewOperationId() {
