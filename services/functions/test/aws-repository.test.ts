@@ -1,5 +1,5 @@
 import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
-import { QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
+import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it, vi } from "vitest";
 import { DynamoAppRepository } from "../src/shared/aws-repository.js";
 
@@ -88,6 +88,82 @@ describe("DynamoAppRepository review batch pages", () => {
     expect(second).toMatchObject({ Limit: 3, ExclusiveStartKey: { pk: "CHANGE", sk: "CHG#evaluated-1" } });
     expect(first.FilterExpression).toContain("attribute_not_exists(#changeSource)");
     expect(first.FilterExpression).toContain("#after.#benefitSource.#system = :sourceSystem");
+  });
+});
+
+describe("DynamoAppRepository bulk review progress", () => {
+  const operationItem = (approvedCount = 0, status: "IN_PROGRESS" | "COMPLETED" = "IN_PROGRESS") => ({
+    pk: "REVIEW_OPERATION",
+    sk: "OP#11111111-1111-4111-8111-111111111111",
+    entityType: "BULK_REVIEW_OPERATION",
+    id: "11111111-1111-4111-8111-111111111111",
+    source: "LAW_ORDINANCES",
+    detectedAt: "2026-07-15T00:00:00.000Z",
+    fingerprint: "a".repeat(64),
+    expectedCount: 2,
+    changeIds: ["chg:1", "chg:2"],
+    reviewer: "pilot@example.com",
+    reason: "INITIAL_BASELINE_BULK_APPROVAL",
+    status,
+    approvedCount,
+    createdAt: "2026-07-16T00:00:00.000Z",
+    updatedAt: "2026-07-16T00:00:00.000Z",
+    ...(status === "COMPLETED" ? { completedAt: "2026-07-16T00:00:01.000Z" } : {}),
+  });
+
+  it("retries a transient transaction with the same idempotency token", async () => {
+    const transactions: TransactWriteCommand[] = [];
+    const send = vi.fn(async (command: unknown): Promise<unknown> => {
+      if (command instanceof GetCommand) return { Item: operationItem() };
+      if (command instanceof TransactWriteCommand) {
+        transactions.push(command);
+        if (transactions.length === 1) throw namedError("InternalServerError");
+        return {};
+      }
+      throw new Error("Unexpected command");
+    });
+    const sleep = vi.fn(async (_milliseconds: number): Promise<void> => undefined);
+    const repository = new DynamoAppRepository({
+      tableName: "pilot-table",
+      client: fakeClient(send),
+      sleep,
+      random: () => 0.5,
+    });
+
+    const result = await repository.approveBulkReviewChunk(
+      "11111111-1111-4111-8111-111111111111",
+      "2026-07-16T00:00:01.000Z",
+      100,
+    );
+
+    expect(result).toMatchObject({ processedCount: 2, operation: { approvedCount: 2, status: "COMPLETED" } });
+    expect(transactions).toHaveLength(2);
+    expect(transactions[0]?.input.ClientRequestToken).toHaveLength(36);
+    expect(transactions[1]?.input.ClientRequestToken).toBe(transactions[0]?.input.ClientRequestToken);
+    expect(sleep).toHaveBeenCalledExactlyOnceWith(50);
+  });
+
+  it("returns committed progress when the transaction response is lost", async () => {
+    let getCount = 0;
+    const send = vi.fn(async (command: unknown): Promise<unknown> => {
+      if (command instanceof GetCommand) {
+        getCount += 1;
+        return { Item: getCount === 1 ? operationItem() : operationItem(2, "COMPLETED") };
+      }
+      if (command instanceof TransactWriteCommand) throw namedError("InternalServerError");
+      throw new Error("Unexpected command");
+    });
+    const sleep = vi.fn(async (_milliseconds: number): Promise<void> => undefined);
+    const repository = new DynamoAppRepository({ tableName: "pilot-table", client: fakeClient(send), sleep });
+
+    const result = await repository.approveBulkReviewChunk(
+      "11111111-1111-4111-8111-111111111111",
+      "2026-07-16T00:00:01.000Z",
+      100,
+    );
+
+    expect(result).toMatchObject({ processedCount: 0, operation: { approvedCount: 2, status: "COMPLETED" } });
+    expect(sleep).not.toHaveBeenCalled();
   });
 });
 

@@ -518,7 +518,7 @@ export function AdminPanel() {
             <span className="eyebrow">되돌리기 전 재검수 필요</span>
             <h3 id="review-dialog-title">{dialogGroup.label} {dialogGroup.count.toLocaleString("ko-KR")}건 승인</h3>
             <p id="review-dialog-description">
-              서버가 원천·수집시각·건수·지문을 다시 확인한 뒤 100건씩 처리합니다. 이 승인은 게시를 시작하지 않습니다.
+              서버가 원천·수집시각·건수·지문을 다시 확인한 뒤 최대 99건씩 안전하게 처리합니다. 이 승인은 게시를 시작하지 않습니다.
             </p>
             <form onSubmit={beginBulkReview}>
               <label className="review-acknowledgement">

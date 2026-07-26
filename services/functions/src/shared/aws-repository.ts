@@ -351,8 +351,9 @@ export class DynamoAppRepository implements AppRepository {
     const complete = nextApprovedCount === operation.expectedCount;
     const identity = reviewSourceIdentity(operation.source);
 
-    try {
-      await this.#client.send(new TransactWriteCommand({
+    const transaction = new TransactWriteCommand(
+      {
+        ClientRequestToken: sha256Hex(`${operation.id}\n${operation.approvedCount}\n${at}`).slice(0, 36),
         TransactItems: [
           {
             Update: {
@@ -424,14 +425,30 @@ export class DynamoAppRepository implements AppRepository {
             },
           })),
         ],
-      }));
-    } catch (error) {
-      const current = await this.getBulkReviewOperation(operation.id);
-      if (current && (current.approvedCount > operation.approvedCount || current.status === "COMPLETED")) {
-        return { operation: current, processedCount: 0 };
+      },
+    );
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        await this.#client.send(transaction);
+        break;
+      } catch (error) {
+        // A DynamoDB transaction can commit even when its response is lost. A
+        // consistent progress read prevents a committed chunk from surfacing as
+        // a false 500, while the request token makes same-invocation retries safe.
+        const current = await this.getBulkReviewOperation(operation.id);
+        if (current && (current.approvedCount > operation.approvedCount || current.status === "COMPLETED")) {
+          return { operation: current, processedCount: 0 };
+        }
+        if (!isBulkReviewRetryable(error) || attempt >= BULK_REVIEW_MAX_ATTEMPTS - 1) {
+          if (isTransactionConflict(error)) throw new BulkReviewConflictError();
+          throw error;
+        }
+        const ceiling = Math.min(
+          BULK_REVIEW_RETRY_CAP_MS,
+          BULK_REVIEW_RETRY_BASE_MS * 2 ** attempt,
+        );
+        await this.#sleep(Math.floor(this.#random() * ceiling));
       }
-      if (isTransactionConflict(error)) throw new BulkReviewConflictError();
-      throw error;
     }
 
     return {
@@ -760,6 +777,40 @@ function isTransactionConflict(error: unknown): boolean {
     : undefined;
   return reasons === undefined || reasons.some((reason) =>
     reason.Code === "ConditionalCheckFailed" || reason.Code === "TransactionConflict");
+}
+
+const BULK_REVIEW_MAX_ATTEMPTS = 5;
+const BULK_REVIEW_RETRY_BASE_MS = 100;
+const BULK_REVIEW_RETRY_CAP_MS = 2_000;
+const BULK_REVIEW_RETRYABLE_ERROR_NAMES = new Set([
+  "InternalServerError",
+  "InternalServerErrorException",
+  "ProvisionedThroughputExceededException",
+  "ThrottlingException",
+  "RequestLimitExceeded",
+  "TransactionInProgressException",
+  "TimeoutError",
+]);
+const BULK_REVIEW_RETRYABLE_CANCELLATION_CODES = new Set([
+  "TransactionConflict",
+  "ProvisionedThroughputExceeded",
+  "ThrottlingError",
+]);
+
+function isBulkReviewRetryable(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const name = "name" in error ? (error as { name?: string }).name : undefined;
+  if (name && BULK_REVIEW_RETRYABLE_ERROR_NAMES.has(name)) return true;
+  const statusCode = "$metadata" in error
+    ? (error as { $metadata?: { httpStatusCode?: number } }).$metadata?.httpStatusCode
+    : undefined;
+  if (statusCode !== undefined && statusCode >= 500) return true;
+  if (name !== "TransactionCanceledException" || !("CancellationReasons" in error)) return false;
+  const reasons = (error as { CancellationReasons?: Array<{ Code?: string }> }).CancellationReasons;
+  if (!reasons?.length) return false;
+  const codes = reasons.map((reason) => reason.Code).filter((code): code is string => code !== undefined);
+  return codes.some((code) => BULK_REVIEW_RETRYABLE_CANCELLATION_CODES.has(code))
+    && codes.every((code) => code === "None" || BULK_REVIEW_RETRYABLE_CANCELLATION_CODES.has(code));
 }
 
 const PUBLICATION_TRANSACTION_SIZE = 25;
