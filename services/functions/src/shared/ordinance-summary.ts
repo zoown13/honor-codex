@@ -1,8 +1,10 @@
-import { UNKNOWN_OFFICIAL_DETAIL } from "@honor/core";
+import { UNKNOWN_OFFICIAL_DETAIL, sha256Hex } from "@honor/core";
 import type { Benefit } from "@honor/core";
 import type { OrdinanceSummary } from "./contracts.js";
 
 export const DEFAULT_SUMMARY_MODEL_ID = "global.amazon.nova-2-lite-v1:0";
+export const DEFAULT_SUMMARY_SAMPLE_SIZE = 10;
+export const ORDINANCE_SUMMARY_PROMPT_VERSION = "v2-honorable-family-focused";
 export const NOVA_2_LITE_INPUT_USD_PER_MILLION = 0.30;
 export const NOVA_2_LITE_OUTPUT_USD_PER_MILLION = 2.50;
 export const DEFAULT_MAX_SUMMARY_INPUT_CHARS = 24_000;
@@ -17,7 +19,61 @@ export interface SummaryCostEstimate {
 
 export function ordinanceSummaryCandidates(benefits: readonly Benefit[]): Benefit[] {
   return benefits.filter((benefit) => benefit.type === "ORDINANCE"
-    && benefit.summaryProvenance?.kind !== "AI");
+    && benefit.summaryProvenance?.kind !== "AI"
+    && ordinanceSummarySourceText(benefit).includes("병역명문가"));
+}
+
+export function summaryCandidateKey(benefit: Benefit): string {
+  return `${benefit.id}:${benefit.source.contentHash}`;
+}
+
+export function selectOrdinanceSummarySample(
+  benefits: readonly Benefit[],
+  sampleSize = DEFAULT_SUMMARY_SAMPLE_SIZE,
+): Benefit[] {
+  if (!Number.isInteger(sampleSize) || sampleSize < 1 || sampleSize > 2_500) {
+    throw new Error("Ordinance summary sample size must be between 1 and 2500");
+  }
+  const groups = new Map<string, Benefit[]>();
+  for (const benefit of ordinanceSummaryCandidates(benefits)) {
+    const groupKey = benefit.provider.trim() || benefit.id;
+    const group = groups.get(groupKey) ?? [];
+    group.push(benefit);
+    groups.set(groupKey, group);
+  }
+  const rankedGroups = [...groups.entries()]
+    .map(([provider, group]) => ({
+      provider,
+      rank: sha256Hex(`honor-pilot-ordinance-provider-v1\n${provider}`),
+      benefits: group.sort((left, right) =>
+        sampleRank(left).localeCompare(sampleRank(right)) || left.id.localeCompare(right.id)),
+    }))
+    .sort((left, right) => left.rank.localeCompare(right.rank) || left.provider.localeCompare(right.provider));
+  const selected: Benefit[] = [];
+  for (let depth = 0; selected.length < sampleSize; depth += 1) {
+    let added = 0;
+    for (const group of rankedGroups) {
+      const benefit = group.benefits[depth];
+      if (!benefit) continue;
+      selected.push(benefit);
+      added += 1;
+      if (selected.length === sampleSize) break;
+    }
+    if (!added) break;
+  }
+  return selected;
+}
+
+export function summaryJobFingerprint(
+  modelId: string,
+  benefits: readonly Benefit[],
+  promptVersion?: string,
+): string {
+  return sha256Hex([
+    ...(promptVersion ? [promptVersion] : []),
+    modelId,
+    ...benefits.map(summaryCandidateKey).sort(),
+  ].join("\n"));
 }
 
 export function estimateOrdinanceSummaryCost(
@@ -60,6 +116,9 @@ export function buildOrdinanceSummaryPrompt(benefit: Benefit): string {
   return [
     "당신은 대한민국 자치법규를 시민이 이해하기 쉽게 구조화하는 검수 보조자입니다.",
     "아래 원문에 명시된 내용만 사용하세요. 추론하거나 일반 상식을 보충하지 마세요.",
+    "여러 감면 대상 중 병역명문가와 그 가족에게 적용되는 대상·혜택·증빙·절차·제한만 추출하세요.",
+    "다른 국가유공자·장애인·수급자 등의 조건은 병역명문가 조건을 설명하는 데 직접 필요하지 않으면 제외하세요.",
+    "summary와 eligibility에는 반드시 '병역명문가'라는 말을 포함하세요.",
     `명시되지 않은 필드는 정확히 '${UNKNOWN_OFFICIAL_DETAIL}' 한 항목으로 반환하세요.`,
     "summary는 2문장 이내, 각 배열은 중복 없이 최대 6개 항목으로 작성하세요.",
     "benefitKind는 FREE, DISCOUNT, OTHER 중 하나입니다.",
@@ -99,7 +158,7 @@ export function applyOrdinanceSummary(
   inputTokens: number,
   outputTokens: number,
 ): Benefit {
-  if (benefit.type !== "ORDINANCE") throw new Error("Only ordinance benefits can be AI summarized");
+  assertHonorableFamilySummary(benefit, summary);
   const amount = summary.amount?.trim();
   const next: Benefit = {
     ...benefit,
@@ -164,6 +223,21 @@ function stringList(value: unknown, field: string): string[] {
     throw new Error(`AI summary ${field} must contain 1 to 6 items`);
   }
   return [...new Set(value.map((item) => requiredText(item, field, 300)))];
+}
+
+export function assertHonorableFamilySummary(benefit: Benefit, summary: OrdinanceSummary): void {
+  if (benefit.type !== "ORDINANCE") throw new Error("Only ordinance benefits can be AI summarized");
+  if (!ordinanceSummarySourceText(benefit).includes("병역명문가")) {
+    throw new Error("Ordinance source does not contain honorable-family evidence");
+  }
+  if (!summary.summary.includes("병역명문가")
+    || !summary.eligibility.some((item) => item.includes("병역명문가"))) {
+    throw new Error("AI summary omitted the honorable-family target");
+  }
+}
+
+function sampleRank(benefit: Benefit): string {
+  return sha256Hex(`honor-pilot-ordinance-sample-v1\n${summaryCandidateKey(benefit)}`);
 }
 
 function roundUsd(value: number): number {

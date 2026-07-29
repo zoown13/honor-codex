@@ -172,6 +172,12 @@ export class HonorBenefitsPilotStack extends Stack {
       allowedPattern: "[0-9]+(\\.[0-9]{1,2})?",
       description: "Hard USD estimate ceiling for a single owner-approved ordinance summary job."
     });
+    const aiSummarySampleSize = new CfnParameter(this, "AiSummarySampleSize", {
+      type: "String",
+      default: "10",
+      allowedPattern: "([1-9]|[1-9][0-9]|[1-9][0-9]{2}|1[0-9]{3}|2[0-4][0-9]{2}|2500)",
+      description: "Maximum number of ordinances in one owner-approved AI summary sample job."
+    });
     const mmaFacilitiesUrl = new CfnParameter(this, "MmaFacilitiesUrl", {
       type: "String",
       default: "https://open.mma.go.kr/caisGGGS/bymmgListAjaxJsonCall.json"
@@ -691,6 +697,7 @@ export class HonorBenefitsPilotStack extends Stack {
         ORDINANCE_SUMMARY_QUEUE_URL: ordinanceSummaryQueue.queueUrl,
         BEDROCK_SUMMARY_MODEL_ID: bedrockSummaryModelId.valueAsString,
         AI_SUMMARY_MAX_JOB_USD: aiSummaryMaxJobUsd.valueAsString,
+        AI_SUMMARY_SAMPLE_SIZE: aiSummarySampleSize.valueAsString,
         AI_SUMMARY_INPUT_USD_PER_MILLION: "0.30",
         AI_SUMMARY_OUTPUT_USD_PER_MILLION: "2.50"
       },

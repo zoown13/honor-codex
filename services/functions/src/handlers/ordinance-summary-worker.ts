@@ -12,8 +12,12 @@ import type {
 import {
   DEFAULT_MAX_SUMMARY_OUTPUT_TOKENS,
   applyOrdinanceSummary,
+  assertHonorableFamilySummary,
   buildOrdinanceSummaryPrompt,
   ordinanceSummaryCandidates,
+  selectOrdinanceSummarySample,
+  summaryCandidateKey,
+  summaryJobFingerprint,
   parseOrdinanceSummaryOutput,
 } from "../shared/ordinance-summary.js";
 import { datasetStorage, repository, required, systemClock } from "../shared/runtime.js";
@@ -87,9 +91,26 @@ async function dispatchJob(
   if (!job || job.id !== message.jobId) throw new Error("Ordinance summary job does not match dispatch message");
   if (job.status === "COMPLETED" || job.status === "COMPLETED_WITH_ERRORS") return;
   if (job.status === "FAILED") throw new Error("Ordinance summary job is already failed");
-  const benefits = ordinanceSummaryCandidates(await deps.storage.loadBenefits());
-  if (benefits.length !== job.total) {
-    throw new Error(`Ordinance summary candidate count changed: expected ${job.total}, received ${benefits.length}`);
+  const candidatePool = ordinanceSummaryCandidates(await deps.storage.loadBenefits());
+  if (job.candidatePoolCount !== undefined && candidatePool.length !== job.candidatePoolCount) {
+    throw new Error(
+      `Ordinance summary candidate pool changed: expected ${job.candidatePoolCount}, received ${candidatePool.length}`,
+    );
+  }
+  const candidateKeys = job.candidateKeys?.length
+    ? job.candidateKeys
+    : selectOrdinanceSummarySample(candidatePool, job.total).map(summaryCandidateKey);
+  if (candidateKeys.length !== job.total || new Set(candidateKeys).size !== job.total) {
+    throw new Error("Ordinance summary job candidate keys are invalid");
+  }
+  const candidatesByKey = new Map(candidatePool.map((benefit) => [summaryCandidateKey(benefit), benefit]));
+  const selected = candidateKeys.map((key) => candidatesByKey.get(key));
+  if (selected.some((benefit) => benefit === undefined)) {
+    throw new Error("An ordinance summary sample changed after owner confirmation");
+  }
+  const benefits = selected as Benefit[];
+  if (summaryJobFingerprint(job.modelId, benefits, job.promptVersion) !== job.fingerprint) {
+    throw new Error("Ordinance summary job fingerprint no longer matches the selected sample");
   }
   const queuedCount = await deps.queue.send(job.id, benefits);
   if (queuedCount !== job.total) throw new Error("Not all ordinance summary items were queued");
@@ -114,13 +135,15 @@ async function summarizeItem(
   if (job.status === "FAILED") throw new Error("Ordinance summary job is already failed");
   if (message.benefit.type !== "ORDINANCE") throw new Error("Summary queue item is not an ordinance");
 
-  const cacheKey = `v1:${sha256Hex(`${job.modelId}\n${message.benefit.source.contentHash}`)}`;
+  const promptVersion = job.promptVersion ?? "v1";
+  const cacheKey = `${promptVersion}:${sha256Hex(`${job.modelId}\n${message.benefit.source.contentHash}`)}`;
   let cached = await deps.repository.getOrdinanceSummaryCache(cacheKey);
   if (!cached) {
     const generated = await deps.summarizer.summarize(message.benefit, job.modelId);
     cached = {
       cacheKey,
       modelId: job.modelId,
+      promptVersion,
       sourceContentHash: message.benefit.source.contentHash,
       value: generated.value,
       inputTokens: generated.inputTokens,
@@ -222,8 +245,10 @@ class BedrockOrdinanceSummarizer implements OrdinanceSummarizer {
       .join("")
       .trim();
     if (!text) throw new Error("Bedrock returned an empty ordinance summary");
+    const value = parseOrdinanceSummaryOutput(text);
+    assertHonorableFamilySummary(benefit, value);
     return {
-      value: parseOrdinanceSummaryOutput(text),
+      value,
       inputTokens: response.usage?.inputTokens ?? 0,
       outputTokens: response.usage?.outputTokens ?? 0,
     };

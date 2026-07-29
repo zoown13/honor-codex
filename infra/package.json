@@ -2,6 +2,7 @@
   "name": "@honor/infra",
   "version": "0.1.0",
   "private": true,
+  "license": "Apache-2.0",
   "description": "AWS CDK infrastructure for the Honor Benefits private pilot",
   "scripts": {
     "build": "tsc -p tsconfig.json",

@@ -8,6 +8,8 @@ import {
   applyOrdinanceSummary,
   estimateOrdinanceSummaryCost,
   parseOrdinanceSummaryOutput,
+  selectOrdinanceSummarySample,
+  summaryCandidateKey,
 } from "../src/shared/ordinance-summary.js";
 import { preserveReviewedAiSummaries } from "../src/shared/ingestion.js";
 import { FakeRepository, FakeStorage, httpEvent } from "./fakes.js";
@@ -86,9 +88,27 @@ describe("admin publishing control", () => {
 });
 
 describe("ordinance AI summary", () => {
+  it("selects the same municipality-spread sample regardless of input order", () => {
+    const candidates = Array.from({ length: 25 }, (_, index) => normalizeOrdinance({
+      id: `ordinance-${index + 1}`,
+      title: `병역명문가 예우 조례 ${index + 1}`,
+      localGovernment: `테스트시 ${index + 1}`,
+      url: `https://www.law.go.kr/LSW/ordinInfoP.do?ordinSeq=${index + 1}`,
+      matchingArticles: [`제${index + 1}조 병역명문가 예우`],
+    }, now));
+
+    const selected = selectOrdinanceSummarySample(candidates, 10);
+    const reversed = selectOrdinanceSummarySample([...candidates].reverse(), 10);
+
+    expect(selected).toHaveLength(10);
+    expect(reversed.map(({ id }) => id)).toEqual(selected.map(({ id }) => id));
+    expect(new Set(selected.map(({ provider }) => provider))).toHaveLength(10);
+    expect(new Set(selected.map(summaryCandidateKey))).toHaveLength(10);
+  });
+
   it("validates structured JSON, estimates a bounded cost, and preserves AI provenance", () => {
     const value = parseOrdinanceSummaryOutput(JSON.stringify({
-      summary: "공공시설 사용료를 50% 감면합니다.",
+      summary: "병역명문가는 공공시설 사용료를 50% 감면받습니다.",
       eligibility: ["병역명문가"],
       benefitKind: "DISCOUNT",
       amount: "사용료 50% 감면",
@@ -106,10 +126,18 @@ describe("ordinance AI summary", () => {
       120,
     );
 
+    expect(() => applyOrdinanceSummary(
+      ordinance,
+      { ...value, summary: "공공시설 사용료를 감면합니다.", eligibility: ["국가유공자"] },
+      "global.amazon.nova-2-lite-v1:0",
+      now,
+      900,
+      120,
+    )).toThrow("AI summary omitted the honorable-family target");
     expect(estimate.itemCount).toBe(1);
     expect(estimate.estimatedCostUsd).toBeGreaterThan(0);
     expect(summarized).toMatchObject({
-      summary: "공공시설 사용료를 50% 감면합니다.",
+      summary: "병역명문가는 공공시설 사용료를 50% 감면받습니다.",
       benefitKind: "DISCOUNT",
       amount: "사용료 50% 감면",
       reviewState: "SOURCE_ONLY",
@@ -149,17 +177,29 @@ describe("ordinance AI summary", () => {
     }, { PILOT_ADMIN_TOKEN: "pilot-admin-token-1234567890", AI_SUMMARY_MAX_JOB_USD: "5" });
 
     const preview = JSON.parse((await control(pilotEvent("/v1/pilot-admin/ordinance-summaries", "GET"))).body);
+    expect(preview).toMatchObject({
+      candidatePoolCount: 1,
+      sampleSize: 1,
+      estimate: { itemCount: 1 },
+    });
     const started = await control(pilotEvent("/v1/pilot-admin/ordinance-summaries", "POST", {
       confirmation: preview.confirmationPhrase,
       maxCostUsd: preview.estimate.estimatedCostUsd,
     }));
     expect(started.statusCode).toBe(202);
     expect(dispatch).toHaveBeenCalledOnce();
+    expect(JSON.parse(started.body).job).not.toHaveProperty("candidateKeys");
+    expect(repository.ordinanceSummaryJob).toMatchObject({
+      promptVersion: "v2-honorable-family-focused",
+      candidatePoolCount: 1,
+      candidateKeys: [summaryCandidateKey(ordinance)],
+      total: 1,
+    });
 
     const queued: (typeof ordinance)[] = [];
     const summarize = vi.fn(async () => ({
       value: {
-        summary: "공공시설 사용료를 50% 감면합니다.",
+        summary: "병역명문가는 공공시설 사용료를 50% 감면받습니다.",
         eligibility: ["병역명문가"],
         benefitKind: "DISCOUNT" as const,
         amount: "사용료 50% 감면",
@@ -186,5 +226,99 @@ describe("ordinance AI summary", () => {
     expect(repository.changes[0]).toMatchObject({ status: "PENDING", risk: "HIGH", source: "LAW_ORDINANCES" });
     expect(repository.ordinanceSummaryJob).toMatchObject({ status: "COMPLETED", succeededCount: 1, inputTokens: 900, outputTokens: 120 });
     expect(repository.ordinanceSummaryCache.size).toBe(1);
+    expect([...repository.ordinanceSummaryCache.keys()][0]).toMatch(/^v2-honorable-family-focused:/);
+  });
+
+  it("repairs a fully processed active job when status is read", async () => {
+    const repository = new FakeRepository();
+    const storage = new FakeStorage();
+    repository.ordinanceSummaryJob = {
+      id: "aisum:repair",
+      fingerprint: "a".repeat(64),
+      modelId: "global.amazon.nova-2-lite-v1:0",
+      candidatePoolCount: 1_432,
+      candidateKeys: [],
+      status: "RUNNING",
+      total: 10,
+      queuedCount: 10,
+      processedCount: 10,
+      succeededCount: 8,
+      failedCount: 2,
+      inputTokens: 7_977,
+      outputTokens: 2_226,
+      estimatedCostUsd: 0.03,
+      createdAt: now,
+      updatedAt: now,
+    };
+    const control = createOrdinanceSummaryControlHandler({
+      repository,
+      storage,
+      dispatch: { dispatch: vi.fn(async () => undefined) },
+      clock: { now: () => new Date(now) },
+    }, { PILOT_ADMIN_TOKEN: "pilot-admin-token-1234567890" });
+
+    const response = await control(pilotEvent("/v1/pilot-admin/ordinance-summaries", "GET"));
+
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body).job).toMatchObject({
+      status: "COMPLETED_WITH_ERRORS",
+      processedCount: 10,
+      succeededCount: 8,
+      failedCount: 2,
+    });
+  });
+
+  it("limits a job to the configured ten-item sample before dispatch", async () => {
+    const repository = new FakeRepository();
+    const storage = new FakeStorage();
+    storage.benefits = Array.from({ length: 15 }, (_, index) => normalizeOrdinance({
+      id: `sample-${index + 1}`,
+      title: `병역명문가 표본 조례 ${index + 1}`,
+      localGovernment: `표본시 ${index + 1}`,
+      url: `https://www.law.go.kr/LSW/ordinInfoP.do?ordinSeq=${100 + index}`,
+      matchingArticles: [`제${index + 1}조 병역명문가 표본 혜택`],
+    }, now));
+    const dispatch = vi.fn(async () => undefined);
+    const control = createOrdinanceSummaryControlHandler({
+      repository,
+      storage,
+      dispatch: { dispatch },
+      clock: { now: () => new Date(now) },
+    }, {
+      PILOT_ADMIN_TOKEN: "pilot-admin-token-1234567890",
+      AI_SUMMARY_MAX_JOB_USD: "5",
+      AI_SUMMARY_SAMPLE_SIZE: "10",
+    });
+
+    const preview = JSON.parse((await control(pilotEvent("/v1/pilot-admin/ordinance-summaries", "GET"))).body);
+    expect(preview).toMatchObject({
+      candidatePoolCount: 15,
+      sampleSize: 10,
+      confirmationPhrase: "SUMMARIZE 10",
+      estimate: { itemCount: 10 },
+    });
+    await control(pilotEvent("/v1/pilot-admin/ordinance-summaries", "POST", {
+      confirmation: preview.confirmationPhrase,
+      maxCostUsd: preview.estimate.estimatedCostUsd,
+    }));
+
+    const queued: (typeof ordinance)[] = [];
+    const worker = createOrdinanceSummaryWorker({
+      repository,
+      storage,
+      summarizer: {
+        summarize: vi.fn(async () => {
+          throw new Error("dispatch test must not invoke the model");
+        }),
+      },
+      queue: { send: async (_jobId, benefits) => { queued.push(...benefits); return benefits.length; } },
+      clock: { now: () => new Date(now) },
+    });
+    const job = repository.ordinanceSummaryJob!;
+    expect(job).toMatchObject({ total: 10, candidatePoolCount: 15 });
+    expect(job.candidateKeys).toHaveLength(10);
+    expect((await worker(sqsEvent("dispatch-10", { type: "DISPATCH", jobId: job.id }))).batchItemFailures).toEqual([]);
+    expect(queued).toHaveLength(10);
+    expect(new Set(queued.map(({ provider }) => provider))).toHaveLength(10);
   });
 });

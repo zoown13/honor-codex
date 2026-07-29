@@ -1,5 +1,4 @@
 import { SendMessageCommand, SQSClient } from "@aws-sdk/client-sqs";
-import { sha256Hex } from "@honor/core";
 import type { AppRepository, Clock, DatasetStorage, OrdinanceSummaryJob } from "../shared/contracts.js";
 import { PublicationConflictError } from "../shared/contracts.js";
 import type { HttpEvent, HttpResult } from "../shared/http.js";
@@ -7,9 +6,14 @@ import { HttpError, json, method, parseBody, requireAdmin, requirePilotAdmin, wi
 import { inferReviewSource } from "../shared/ingestion.js";
 import {
   DEFAULT_SUMMARY_MODEL_ID,
+  DEFAULT_SUMMARY_SAMPLE_SIZE,
+  ORDINANCE_SUMMARY_PROMPT_VERSION,
   actualSummaryCostUsd,
   estimateOrdinanceSummaryCost,
   ordinanceSummaryCandidates,
+  selectOrdinanceSummarySample,
+  summaryCandidateKey,
+  summaryJobFingerprint,
 } from "../shared/ordinance-summary.js";
 import { datasetStorage, nonEmpty, repository, required, systemClock } from "../shared/runtime.js";
 
@@ -35,9 +39,16 @@ export function createOrdinanceSummaryControlHandler(
 
     const modelId = nonEmpty(env.BEDROCK_SUMMARY_MODEL_ID) || DEFAULT_SUMMARY_MODEL_ID;
     const maxJobCostUsd = positiveNumber(env.AI_SUMMARY_MAX_JOB_USD, 5);
+    const configuredSampleSize = positiveInteger(env.AI_SUMMARY_SAMPLE_SIZE, DEFAULT_SUMMARY_SAMPLE_SIZE, 2_500);
     const inputPrice = positiveNumber(env.AI_SUMMARY_INPUT_USD_PER_MILLION, 0.30);
     const outputPrice = positiveNumber(env.AI_SUMMARY_OUTPUT_USD_PER_MILLION, 2.50);
-    const job = await deps.repository.getOrdinanceSummaryJob();
+    let job = await deps.repository.getOrdinanceSummaryJob();
+    if (job && (job.status === "QUEUED" || job.status === "RUNNING") && job.processedCount >= job.total) {
+      job = await deps.repository.reconcileOrdinanceSummaryJob(
+        job.id,
+        (deps.clock ?? systemClock).now().toISOString(),
+      );
+    }
     const changes = await deps.repository.listReviewSummaryChanges();
     const ordinanceChangesAwaitingPublish = changes.filter((change) =>
       inferReviewSource(change) === "LAW_ORDINANCES"
@@ -50,7 +61,8 @@ export function createOrdinanceSummaryControlHandler(
     }
 
     const benefits = await deps.storage.loadBenefits();
-    const candidates = ordinanceSummaryCandidates(benefits);
+    const candidatePool = ordinanceSummaryCandidates(benefits);
+    const candidates = selectOrdinanceSummarySample(candidatePool, configuredSampleSize);
     const estimate = estimateOrdinanceSummaryCost(candidates, inputPrice, outputPrice);
     const confirmationPhrase = `SUMMARIZE ${estimate.itemCount}`;
     const canStart = estimate.itemCount > 0
@@ -60,8 +72,10 @@ export function createOrdinanceSummaryControlHandler(
     if (method(event) === "GET") {
       return json(200, {
         modelId,
-        job,
+        ...(job ? { job: summaryJobView(job) } : {}),
         estimate,
+        candidatePoolCount: candidatePool.length,
+        sampleSize: candidates.length,
         actualCostUsd: job ? actualSummaryCostUsd(job.inputTokens, job.outputTokens, inputPrice, outputPrice) : 0,
         confirmationPhrase,
         ordinanceChangesAwaitingPublish,
@@ -89,14 +103,14 @@ export function createOrdinanceSummaryControlHandler(
     }
 
     const now = (deps.clock ?? systemClock).now().toISOString();
-    const fingerprint = sha256Hex([
-      modelId,
-      ...candidates.map((benefit) => `${benefit.id}:${benefit.source.contentHash}`).sort(),
-    ].join("\n"));
+    const fingerprint = summaryJobFingerprint(modelId, candidates, ORDINANCE_SUMMARY_PROMPT_VERSION);
     const proposed: OrdinanceSummaryJob = {
       id: `aisum:${fingerprint.slice(0, 32)}`,
       fingerprint,
       modelId,
+      promptVersion: ORDINANCE_SUMMARY_PROMPT_VERSION,
+      candidatePoolCount: candidatePool.length,
+      candidateKeys: candidates.map(summaryCandidateKey),
       status: "QUEUED",
       total: candidates.length,
       queuedCount: 0,
@@ -130,7 +144,7 @@ export function createOrdinanceSummaryControlHandler(
     }
     return json(202, {
       message: "조례 AI 정제 작업을 대기열에 등록했습니다.",
-      job: created,
+      job: summaryJobView(created),
       estimate,
     });
   });
@@ -145,13 +159,15 @@ function summaryResponse(
 ) {
   return {
     modelId: job.modelId,
-    job,
+    job: summaryJobView(job),
     estimate: {
       itemCount: job.total,
       estimatedInputTokens: 0,
       estimatedOutputTokens: 0,
       estimatedCostUsd: job.estimatedCostUsd,
     },
+    candidatePoolCount: job.candidatePoolCount ?? job.total,
+    sampleSize: job.total,
     actualCostUsd: actualSummaryCostUsd(job.inputTokens, job.outputTokens, inputPrice, outputPrice),
     confirmationPhrase: `SUMMARIZE ${job.total}`,
     ordinanceChangesAwaitingPublish,
@@ -160,10 +176,24 @@ function summaryResponse(
   };
 }
 
+function summaryJobView(job: OrdinanceSummaryJob) {
+  const { candidateKeys: _candidateKeys, ...view } = job;
+  return view;
+}
+
 function positiveNumber(raw: string | undefined, fallback: number): number {
   if (!raw?.trim()) return fallback;
   const parsed = Number(raw);
   if (!Number.isFinite(parsed) || parsed <= 0) throw new Error("AI summary price configuration is invalid");
+  return parsed;
+}
+
+function positiveInteger(raw: string | undefined, fallback: number, maximum: number): number {
+  if (!raw?.trim()) return fallback;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > maximum) {
+    throw new Error("AI summary sample size configuration is invalid");
+  }
   return parsed;
 }
 

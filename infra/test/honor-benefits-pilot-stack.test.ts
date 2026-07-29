@@ -307,7 +307,7 @@ describe("HonorBenefitsPilotStack", () => {
     ]);
     expect(keys("honor-pilot-ordinance-summary-control")).toEqual([
       "ADMIN_EMAILS", "AI_SUMMARY_INPUT_USD_PER_MILLION", "AI_SUMMARY_MAX_JOB_USD",
-      "AI_SUMMARY_OUTPUT_USD_PER_MILLION", "BEDROCK_SUMMARY_MODEL_ID", "DATA_BUCKET",
+      "AI_SUMMARY_OUTPUT_USD_PER_MILLION", "AI_SUMMARY_SAMPLE_SIZE", "BEDROCK_SUMMARY_MODEL_ID", "DATA_BUCKET",
       "DATA_PREFIX", "ORDINANCE_SUMMARY_QUEUE_URL", "PILOT_ADMIN_TOKEN", "RAW_PREFIX", "TABLE_NAME"
     ]);
     expect(keys("honor-pilot-ordinance-summary-worker")).toEqual([

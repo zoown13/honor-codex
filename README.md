@@ -63,3 +63,9 @@ pnpm cdk:synth
 - [법제처 자치법규 OPEN API](https://open.law.go.kr/LSO/openApi/guideResult.do?htmlName=ordinListGuide)
 
 자동수집·재사용 조건은 공개 확대 전에 각 제공기관과 반드시 확인해야 합니다.
+
+## 라이선스
+
+이 프로젝트의 소스 코드와 자체 작성 문서는 [Apache License 2.0](LICENSE)에 따라 공개됩니다.
+
+병무청·법제처 등 외부 기관의 원천 데이터, 문서, 명칭, 로고 및 상표는 이 소프트웨어 라이선스에 포함되지 않으며 각 제공기관의 이용 조건과 관련 법령을 따릅니다.
