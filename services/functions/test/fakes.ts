@@ -16,6 +16,9 @@ import type {
   DatasetStorage,
   DeliveryReservation,
   PublicationOperation,
+  OrdinanceSummaryCache,
+  OrdinanceSummaryItemResult,
+  OrdinanceSummaryJob,
   StoredSubscription,
 } from "../src/shared/contracts.js";
 import type { HttpEvent } from "../src/shared/http.js";
@@ -28,6 +31,9 @@ export class FakeRepository implements AppRepository {
   deliveries = new Map<string, DeliveryReservation>();
   bulkReviewOperations = new Map<string, BulkReviewOperation>();
   publicationOperation: PublicationOperation | undefined;
+  ordinanceSummaryJob: OrdinanceSummaryJob | undefined;
+  ordinanceSummaryCache = new Map<string, OrdinanceSummaryCache>();
+  ordinanceSummaryResults = new Map<string, OrdinanceSummaryItemResult>();
 
   async listSubscriptions(userId: string) { return this.subscriptions.filter((item) => item.userId === userId); }
   async putSubscription(value: StoredSubscription) {
@@ -65,6 +71,29 @@ export class FakeRepository implements AppRepository {
   }
   async listChanges(statuses?: readonly BenefitChange["status"][]) {
     return this.changes.filter((item) => !statuses?.length || statuses.includes(item.status));
+  }
+  async listReviewSummaryChanges() {
+    const projectBenefit = (value: Benefit) => ({
+      id: value.id,
+      type: value.type,
+      title: value.title,
+      provider: value.provider,
+      source: value.source,
+      ...(value.summaryProvenance ? { summaryProvenance: value.summaryProvenance } : {}),
+      ...(value.reviewState ? { reviewState: value.reviewState } : {}),
+    }) as Benefit;
+    return this.changes.map((change) => ({
+      id: change.id,
+      benefitId: change.benefitId,
+      action: change.action,
+      risk: change.risk,
+      status: change.status,
+      changedFields: change.changedFields,
+      detectedAt: change.detectedAt,
+      ...(change.source ? { source: change.source } : {}),
+      ...(change.before ? { before: projectBenefit(change.before) } : {}),
+      ...(change.after ? { after: projectBenefit(change.after) } : {}),
+    }) as BenefitChange);
   }
   async listChangeBatchPage(request: ChangeBatchPageRequest): Promise<ChangeBatchPage> {
     const changes = this.changes
@@ -105,14 +134,27 @@ export class FakeRepository implements AppRepository {
     if (operation.status === "COMPLETED") return { operation, processedCount: 0 };
     const ids = operation.changeIds.slice(operation.approvedCount, operation.approvedCount + Math.min(maxChanges, 99));
     const changes = ids.map((id) => this.changes.find((change) => change.id === id));
-    if (!ids.length || changes.some((change) => change === undefined
-      || change.status !== "PENDING"
-      || change.risk !== "HIGH"
-      || change.action !== "ADD"
-      || change.before !== undefined
-      || change.after === undefined
-      || change.detectedAt !== operation.detectedAt
-      || inferReviewSource(change) !== operation.source)) {
+    const validChange = (change: BenefitChange | undefined) => {
+      if (change === undefined
+        || change.status !== "PENDING"
+        || change.risk !== "HIGH"
+        || change.after === undefined
+        || change.detectedAt !== operation.detectedAt
+        || inferReviewSource(change) !== operation.source) return false;
+      if (operation.reason === "INITIAL_BASELINE_BULK_APPROVAL") {
+        return change.action === "ADD" && change.before === undefined;
+      }
+      if (operation.reason === "AI_ORDINANCE_SUMMARY_BULK_APPROVAL") {
+        return change.action === "UPDATE"
+          && change.before !== undefined
+          && change.after.summaryProvenance?.kind === "AI"
+          && change.after.summaryProvenance.sourceContentHash === change.after.source.contentHash
+          && change.before.source.contentHash === change.after.source.contentHash
+          && change.after.reviewState === "SOURCE_ONLY";
+      }
+      return false;
+    };
+    if (!ids.length || changes.some((change) => !validChange(change))) {
       throw new BulkReviewConflictError();
     }
     for (const change of changes as BenefitChange[]) {
@@ -227,6 +269,68 @@ export class FakeRepository implements AppRepository {
       throw new Error("publication state conflict");
     }
     return operation;
+  }
+  async getOrdinanceSummaryJob() {
+    return this.ordinanceSummaryJob;
+  }
+  async beginOrdinanceSummaryJob(value: OrdinanceSummaryJob) {
+    const active = this.ordinanceSummaryJob;
+    if (active && !["COMPLETED", "COMPLETED_WITH_ERRORS", "FAILED"].includes(active.status)) {
+      if (active.id === value.id && active.fingerprint === value.fingerprint) return active;
+      throw new PublicationConflictError("Another ordinance summary job is already active");
+    }
+    this.ordinanceSummaryJob = { ...value };
+    return this.ordinanceSummaryJob;
+  }
+  async markOrdinanceSummaryJobRunning(jobId: string, queuedCount: number, at: string) {
+    const job = this.requireOrdinanceSummaryJob(jobId);
+    this.ordinanceSummaryJob = {
+      ...job,
+      status: "RUNNING",
+      queuedCount,
+      startedAt: job.startedAt ?? at,
+      updatedAt: at,
+    };
+    return this.ordinanceSummaryJob;
+  }
+  async failOrdinanceSummaryJob(jobId: string, at: string, error: string) {
+    const job = this.requireOrdinanceSummaryJob(jobId);
+    this.ordinanceSummaryJob = { ...job, status: "FAILED", failedAt: at, updatedAt: at, error };
+  }
+  async getOrdinanceSummaryCache(cacheKey: string) {
+    return this.ordinanceSummaryCache.get(cacheKey);
+  }
+  async putOrdinanceSummaryCache(value: OrdinanceSummaryCache) {
+    this.ordinanceSummaryCache.set(value.cacheKey, value);
+  }
+  async recordOrdinanceSummaryItem(jobId: string, result: OrdinanceSummaryItemResult, at: string) {
+    const job = this.requireOrdinanceSummaryJob(jobId);
+    const key = `${jobId}:${result.benefitId}`;
+    if (!this.ordinanceSummaryResults.has(key)) {
+      this.ordinanceSummaryResults.set(key, result);
+      const processedCount = job.processedCount + 1;
+      const failedCount = job.failedCount + (result.status === "FAILED" ? 1 : 0);
+      this.ordinanceSummaryJob = {
+        ...job,
+        processedCount,
+        succeededCount: job.succeededCount + (result.status === "SUCCEEDED" ? 1 : 0),
+        failedCount,
+        inputTokens: job.inputTokens + result.inputTokens,
+        outputTokens: job.outputTokens + result.outputTokens,
+        updatedAt: at,
+        ...(processedCount >= job.total ? {
+          status: failedCount > 0 ? "COMPLETED_WITH_ERRORS" : "COMPLETED",
+          completedAt: at,
+        } : {}),
+      };
+    }
+    return this.ordinanceSummaryJob!;
+  }
+  private requireOrdinanceSummaryJob(id: string) {
+    if (!this.ordinanceSummaryJob || this.ordinanceSummaryJob.id !== id) {
+      throw new Error("ordinance summary job not found");
+    }
+    return this.ordinanceSummaryJob;
   }
   async reserveDelivery(value: DeliveryReservation) {
     const key = `${value.userId}:${value.idempotencyKey}`;

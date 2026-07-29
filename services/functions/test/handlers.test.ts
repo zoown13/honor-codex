@@ -213,10 +213,14 @@ describe("authenticated APIs", () => {
   it("summarizes strict source batches and pages full reviews at no more than 100 items", async () => {
     const repo = new FakeRepository();
     repo.changes.push(...Array.from({ length: 130 }, (_, index) => baselineFacilityChange(index)));
+    const listChanges = vi.spyOn(repo, "listChanges");
+    const listReviewSummaryChanges = vi.spyOn(repo, "listReviewSummaryChanges");
     const handler = createAdminReviewsHandler({ repository: repo, clock: fixedClock }, { ADMIN_EMAILS: "pilot@example.com" });
 
     const summaryResult = await handler(httpEvent("/v1/admin/review-batches", "GET"));
     expect(summaryResult.statusCode).toBe(200);
+    expect(listReviewSummaryChanges).toHaveBeenCalledOnce();
+    expect(listChanges).not.toHaveBeenCalled();
     const summary = JSON.parse(summaryResult.body ?? "{}") as {
       groups: Array<{
         batchId: string; source: string; count: number; fingerprint: string; eligible: boolean;
@@ -366,6 +370,78 @@ describe("authenticated APIs", () => {
       approvedCount: 105, processedCount: 0, remainingCount: 0, complete: true,
     });
     expect(repo.bulkReviewOperations.size).toBe(1);
+  });
+
+  it("approves only source-preserving AI ordinance summaries even when published history exists", async () => {
+    const repo = new FakeRepository();
+    const before = normalizeOrdinance({
+      id: "2112343",
+      title: "테스트 병역명문가 조례",
+      localGovernment: "서울특별시",
+      url: "https://www.law.go.kr/LSW/ordinInfoP.do?ordinSeq=2112343",
+      matchingArticles: ["병역명문가에게 공공시설 사용료의 100분의 50을 감면한다."],
+    }, "2026-07-10T00:00:00.000Z");
+    const detectedAt = "2026-07-12T00:00:00.000Z";
+    const after = {
+      ...before,
+      summary: "공공시설 사용료를 50% 감면합니다.",
+      benefitKind: "DISCOUNT" as const,
+      amount: "사용료 50% 감면",
+      eligibility: ["병역명문가"],
+      requiredProof: ["공식 문서에 명시되지 않음—시설 또는 담당부서 확인 필요"],
+      howToUse: ["시설 이용 시 감면 신청"],
+      constraints: ["대상 시설은 담당부서 확인 필요"],
+      reviewState: "SOURCE_ONLY" as const,
+      summaryProvenance: {
+        kind: "AI" as const,
+        modelId: "global.amazon.nova-2-lite-v1:0",
+        generatedAt: detectedAt,
+        sourceContentHash: before.source.contentHash,
+        inputTokens: 900,
+        outputTokens: 120,
+      },
+    };
+    repo.changes.push(
+      {
+        id: "chg:published-baseline", benefitId: before.id, action: "ADD", risk: "HIGH", status: "PUBLISHED",
+        changedFields: ["created"], after: before, source: "LAW_ORDINANCES",
+        detectedAt: "2026-07-10T00:00:00.000Z", publishedAt: "2026-07-11T00:00:00.000Z",
+      },
+      {
+        id: "chg:ai-summary", benefitId: before.id, action: "UPDATE", risk: "HIGH", status: "PENDING",
+        changedFields: [
+          "amount", "benefitKind", "constraints", "eligibility", "howToUse",
+          "requiredProof", "reviewState", "summary", "summaryProvenance",
+        ],
+        before, after, source: "LAW_ORDINANCES", detectedAt,
+      },
+    );
+    const handler = createAdminReviewsHandler({ repository: repo, clock: fixedClock }, { ADMIN_EMAILS: "pilot@example.com" });
+    const summary = JSON.parse((await handler(httpEvent("/v1/admin/review-batches", "GET"))).body ?? "{}") as {
+      groups: Array<{ batchId: string; source: string; detectedAt: string; count: number; fingerprint: string;
+        confirmationPhrase: string; eligible: boolean; approvalKind?: string }>;
+    };
+    const group = summary.groups[0];
+    expect(group).toMatchObject({ source: "LAW_ORDINANCES", count: 1, eligible: true, approvalKind: "AI_SUMMARY" });
+
+    const operationId = "55555555-5555-4555-8555-555555555555";
+    const response = await handler(httpEvent(
+      `/v1/admin/review-batches/${group?.batchId}/approve`,
+      "POST",
+      {
+        source: group?.source, detectedAt: group?.detectedAt, expectedCount: group?.count,
+        fingerprint: group?.fingerprint, confirmation: group?.confirmationPhrase, operationId,
+      },
+      { pathParameters: { batchId: group?.batchId ?? "" } },
+    ));
+
+    expect(response.statusCode).toBe(200);
+    expect(repo.changes[1]).toMatchObject({
+      status: "APPROVED", reviewReason: "AI_ORDINANCE_SUMMARY_BULK_APPROVAL", reviewOperationId: operationId,
+    });
+    expect(repo.bulkReviewOperations.get(operationId)).toMatchObject({
+      reason: "AI_ORDINANCE_SUMMARY_BULK_APPROVAL", status: "COMPLETED", approvedCount: 1,
+    });
   });
 
   it("rejects stale counts, incorrect confirmation, and non-admin callers before creating an operation", async () => {

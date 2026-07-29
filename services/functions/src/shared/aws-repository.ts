@@ -22,6 +22,9 @@ import type {
   ChangeBatchPageRequest,
   DeliveryReservation,
   PublicationOperation,
+  OrdinanceSummaryCache,
+  OrdinanceSummaryItemResult,
+  OrdinanceSummaryJob,
   StoredSubscription,
 } from "./contracts.js";
 import { reviewSourceIdentity } from "./ingestion.js";
@@ -150,6 +153,62 @@ export class DynamoAppRepository implements AppRepository {
     return values
       .filter((item) => !statuses?.length || statuses.includes(item.status))
       .sort((a, b) => b.detectedAt.localeCompare(a.detectedAt));
+  }
+
+  async listReviewSummaryChanges(): Promise<BenefitChange[]> {
+    const values: BenefitChange[] = [];
+    let startKey: Record<string, unknown> | undefined;
+    do {
+      const result = await this.#client.send(new QueryCommand({
+        TableName: this.#tableName,
+        KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)",
+        ProjectionExpression: [
+          "#id",
+          "#benefitId",
+          "#action",
+          "#risk",
+          "#status",
+          "#detectedAt",
+          "#changedFields",
+          "#changeSource",
+          "#before.#id",
+          "#before.#type",
+          "#before.#title",
+          "#before.#provider",
+          "#before.#benefitSource",
+          "#after.#id",
+          "#after.#type",
+          "#after.#title",
+          "#after.#provider",
+          "#after.#benefitSource",
+          "#after.#summaryProvenance",
+          "#after.#reviewState",
+        ].join(", "),
+        ExpressionAttributeNames: {
+          "#id": "id",
+          "#benefitId": "benefitId",
+          "#action": "action",
+          "#risk": "risk",
+          "#status": "status",
+          "#detectedAt": "detectedAt",
+          "#changedFields": "changedFields",
+          "#changeSource": "source",
+          "#before": "before",
+          "#after": "after",
+          "#type": "type",
+          "#title": "title",
+          "#provider": "provider",
+          "#benefitSource": "source",
+          "#summaryProvenance": "summaryProvenance",
+          "#reviewState": "reviewState",
+        },
+        ExpressionAttributeValues: { ":pk": "CHANGE", ":prefix": "CHG#" },
+        ...(startKey ? { ExclusiveStartKey: startKey } : {}),
+      }));
+      values.push(...(result.Items ?? []).map((item) => fromItem<BenefitChange>(item)));
+      startKey = result.LastEvaluatedKey as Record<string, unknown> | undefined;
+    } while (startKey);
+    return values.sort((a, b) => b.detectedAt.localeCompare(a.detectedAt));
   }
 
   async listChangeBatchPage(request: ChangeBatchPageRequest): Promise<ChangeBatchPage> {
@@ -300,9 +359,75 @@ export class DynamoAppRepository implements AppRepository {
     const nextApprovedCount = operation.approvedCount + changeIds.length;
     const complete = nextApprovedCount === operation.expectedCount;
     const identity = reviewSourceIdentity(operation.source);
+    const aiSummaryReview = operation.reason === "AI_ORDINANCE_SUMMARY_BULK_APPROVAL";
+    if (!aiSummaryReview && operation.reason !== "INITIAL_BASELINE_BULK_APPROVAL") {
+      throw new BulkReviewConflictError("Bulk review operation reason is unsupported");
+    }
+    const sourceIdentityCondition = [
+      "(#changeSource = :reviewSource OR (attribute_not_exists(#changeSource)",
+      "begins_with(benefitId, :benefitIdPrefix)",
+      "#after.#type = :benefitType",
+      "#after.#benefitSource.#system = :sourceSystem))",
+    ];
+    const changeConditionExpression = [
+      "#status = :pending",
+      "risk = :high",
+      ...(aiSummaryReview ? [
+        "#action = :update",
+        "attribute_exists(#before)",
+        "attribute_exists(#after)",
+        "#after.#summaryProvenance.#kind = :ai",
+        "#after.#summaryProvenance.#sourceContentHash = #after.#benefitSource.#contentHash",
+        "#before.#benefitSource.#contentHash = #after.#benefitSource.#contentHash",
+        "#after.#reviewState = :sourceOnly",
+      ] : [
+        "#action = :add",
+        "attribute_not_exists(#before)",
+        "attribute_exists(#after)",
+      ]),
+      "detectedAt = :detectedAt",
+      ...sourceIdentityCondition,
+    ].join(" AND ");
+    const changeExpressionAttributeNames = {
+      "#status": "status",
+      "#action": "action",
+      "#before": "before",
+      "#after": "after",
+      "#type": "type",
+      "#benefitSource": "source",
+      "#system": "system",
+      "#changeSource": "source",
+      ...(aiSummaryReview ? {
+        "#summaryProvenance": "summaryProvenance",
+        "#kind": "kind",
+        "#sourceContentHash": "sourceContentHash",
+        "#contentHash": "contentHash",
+        "#reviewState": "reviewState",
+      } : {}),
+    };
+    const changeExpressionAttributeValues = {
+      ":approved": "APPROVED",
+      ":pending": "PENDING",
+      ":high": "HIGH",
+      ":at": at,
+      ":reviewer": operation.reviewer,
+      ":operationId": operation.id,
+      ":reason": operation.reason,
+      ":reviewSource": operation.source,
+      ":detectedAt": operation.detectedAt,
+      ":benefitIdPrefix": identity.benefitIdPrefix,
+      ":benefitType": identity.benefitType,
+      ":sourceSystem": identity.sourceSystem,
+      ...(aiSummaryReview ? {
+        ":update": "UPDATE",
+        ":ai": "AI",
+        ":sourceOnly": "SOURCE_ONLY",
+      } : { ":add": "ADD" }),
+    };
 
-    try {
-      await this.#client.send(new TransactWriteCommand({
+    const transaction = new TransactWriteCommand(
+      {
+        ClientRequestToken: sha256Hex(`${operation.id}\n${operation.approvedCount}\n${at}`).slice(0, 36),
         TransactItems: [
           {
             Update: {
@@ -334,54 +459,36 @@ export class DynamoAppRepository implements AppRepository {
                 "reviewReason = :reason",
                 "#changeSource = :reviewSource",
               ].join(", "),
-              ConditionExpression: [
-                "#status = :pending",
-                "risk = :high",
-                "#action = :add",
-                "attribute_not_exists(#before)",
-                "attribute_exists(#after)",
-                "detectedAt = :detectedAt",
-                "(#changeSource = :reviewSource OR (attribute_not_exists(#changeSource)",
-                "begins_with(benefitId, :benefitIdPrefix)",
-                "#after.#type = :benefitType",
-                "#after.#benefitSource.#system = :sourceSystem))",
-              ].join(" AND "),
-              ExpressionAttributeNames: {
-                "#status": "status",
-                "#action": "action",
-                "#before": "before",
-                "#after": "after",
-                "#type": "type",
-                "#benefitSource": "source",
-                "#system": "system",
-                "#changeSource": "source",
-              },
-              ExpressionAttributeValues: {
-                ":approved": "APPROVED",
-                ":pending": "PENDING",
-                ":high": "HIGH",
-                ":add": "ADD",
-                ":at": at,
-                ":reviewer": operation.reviewer,
-                ":operationId": operation.id,
-                ":reason": operation.reason,
-                ":reviewSource": operation.source,
-                ":detectedAt": operation.detectedAt,
-                ":benefitIdPrefix": identity.benefitIdPrefix,
-                ":benefitType": identity.benefitType,
-                ":sourceSystem": identity.sourceSystem,
-              },
+              ConditionExpression: changeConditionExpression,
+              ExpressionAttributeNames: changeExpressionAttributeNames,
+              ExpressionAttributeValues: changeExpressionAttributeValues,
             },
           })),
         ],
-      }));
-    } catch (error) {
-      const current = await this.getBulkReviewOperation(operation.id);
-      if (current && (current.approvedCount > operation.approvedCount || current.status === "COMPLETED")) {
-        return { operation: current, processedCount: 0 };
+      },
+    );
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        await this.#client.send(transaction);
+        break;
+      } catch (error) {
+        // A DynamoDB transaction can commit even when its response is lost. A
+        // consistent progress read prevents a committed chunk from surfacing as
+        // a false 500, while the request token makes same-invocation retries safe.
+        const current = await this.getBulkReviewOperation(operation.id);
+        if (current && (current.approvedCount > operation.approvedCount || current.status === "COMPLETED")) {
+          return { operation: current, processedCount: 0 };
+        }
+        if (!isBulkReviewRetryable(error) || attempt >= BULK_REVIEW_MAX_ATTEMPTS - 1) {
+          if (isTransactionConflict(error)) throw new BulkReviewConflictError();
+          throw error;
+        }
+        const ceiling = Math.min(
+          BULK_REVIEW_RETRY_CAP_MS,
+          BULK_REVIEW_RETRY_BASE_MS * 2 ** attempt,
+        );
+        await this.#sleep(Math.floor(this.#random() * ceiling));
       }
-      if (isTransactionConflict(error)) throw new BulkReviewConflictError();
-      throw error;
     }
 
     return {
@@ -612,6 +719,198 @@ export class DynamoAppRepository implements AppRepository {
     }
   }
 
+  async getOrdinanceSummaryJob(): Promise<OrdinanceSummaryJob | undefined> {
+    const result = await this.#client.send(new GetCommand({
+      TableName: this.#tableName,
+      Key: { pk: "ORDINANCE_SUMMARY", sk: "ACTIVE" },
+      ConsistentRead: true,
+    }));
+    return result.Item ? fromItem<OrdinanceSummaryJob>(result.Item) : undefined;
+  }
+
+  async beginOrdinanceSummaryJob(value: OrdinanceSummaryJob): Promise<OrdinanceSummaryJob> {
+    try {
+      await this.#client.send(new PutCommand({
+        TableName: this.#tableName,
+        Item: {
+          pk: "ORDINANCE_SUMMARY",
+          sk: "ACTIVE",
+          entityType: "ORDINANCE_SUMMARY_JOB",
+          ...value,
+        },
+        ConditionExpression: "attribute_not_exists(pk) OR #status IN (:completed, :completedWithErrors, :failed)",
+        ExpressionAttributeNames: { "#status": "status" },
+        ExpressionAttributeValues: {
+          ":completed": "COMPLETED",
+          ":completedWithErrors": "COMPLETED_WITH_ERRORS",
+          ":failed": "FAILED",
+        },
+      }));
+      return value;
+    } catch (error) {
+      if (!isConditionalFailure(error)) throw error;
+      const current = await this.getOrdinanceSummaryJob();
+      if (current?.id === value.id && current.fingerprint === value.fingerprint) return current;
+      throw new PublicationConflictError("Another ordinance summary job is already active");
+    }
+  }
+
+  async markOrdinanceSummaryJobRunning(
+    jobId: string,
+    queuedCount: number,
+    at: string,
+  ): Promise<OrdinanceSummaryJob> {
+    const result = await this.#client.send(new UpdateCommand({
+      TableName: this.#tableName,
+      Key: { pk: "ORDINANCE_SUMMARY", sk: "ACTIVE" },
+      UpdateExpression: [
+        "SET #status = :running",
+        "queuedCount = :queuedCount",
+        "startedAt = if_not_exists(startedAt, :at)",
+        "updatedAt = :at",
+      ].join(", "),
+      ConditionExpression: "id = :id AND #status IN (:queued, :running)",
+      ExpressionAttributeNames: { "#status": "status" },
+      ExpressionAttributeValues: {
+        ":id": jobId,
+        ":queued": "QUEUED",
+        ":running": "RUNNING",
+        ":queuedCount": queuedCount,
+        ":at": at,
+      },
+      ReturnValues: "ALL_NEW",
+    }));
+    return fromItem<OrdinanceSummaryJob>(result.Attributes ?? {});
+  }
+
+  async failOrdinanceSummaryJob(jobId: string, at: string, error: string): Promise<void> {
+    await this.#client.send(new UpdateCommand({
+      TableName: this.#tableName,
+      Key: { pk: "ORDINANCE_SUMMARY", sk: "ACTIVE" },
+      UpdateExpression: "SET #status = :failed, failedAt = :at, updatedAt = :at, #error = :error",
+      ConditionExpression: "id = :id AND #status IN (:queued, :running)",
+      ExpressionAttributeNames: { "#status": "status", "#error": "error" },
+      ExpressionAttributeValues: {
+        ":id": jobId,
+        ":queued": "QUEUED",
+        ":running": "RUNNING",
+        ":failed": "FAILED",
+        ":at": at,
+        ":error": error.slice(0, 500),
+      },
+    }));
+  }
+
+  async getOrdinanceSummaryCache(cacheKey: string): Promise<OrdinanceSummaryCache | undefined> {
+    const result = await this.#client.send(new GetCommand({
+      TableName: this.#tableName,
+      Key: { pk: "ORDINANCE_SUMMARY_CACHE", sk: cacheKey },
+      ConsistentRead: true,
+    }));
+    return result.Item ? fromItem<OrdinanceSummaryCache>(result.Item) : undefined;
+  }
+
+  async putOrdinanceSummaryCache(value: OrdinanceSummaryCache): Promise<void> {
+    await this.#client.send(new PutCommand({
+      TableName: this.#tableName,
+      Item: {
+        pk: "ORDINANCE_SUMMARY_CACHE",
+        sk: value.cacheKey,
+        entityType: "ORDINANCE_SUMMARY_CACHE",
+        ...value,
+      },
+    }));
+  }
+
+  async recordOrdinanceSummaryItem(
+    jobId: string,
+    result: OrdinanceSummaryItemResult,
+    at: string,
+  ): Promise<OrdinanceSummaryJob> {
+    try {
+      await this.#client.send(new TransactWriteCommand({
+        TransactItems: [
+          {
+            Put: {
+              TableName: this.#tableName,
+              Item: {
+                pk: `ORDINANCE_SUMMARY_JOB#${jobId}`,
+                sk: `ITEM#${result.benefitId}`,
+                entityType: "ORDINANCE_SUMMARY_ITEM",
+                jobId,
+                ...result,
+                createdAt: at,
+              },
+              ConditionExpression: "attribute_not_exists(pk)",
+            },
+          },
+          {
+            Update: {
+              TableName: this.#tableName,
+              Key: { pk: "ORDINANCE_SUMMARY", sk: "ACTIVE" },
+              UpdateExpression: [
+                "SET updatedAt = :at",
+                "ADD processedCount :one,",
+                "succeededCount :succeeded,",
+                "failedCount :failed,",
+                "inputTokens :inputTokens,",
+                "outputTokens :outputTokens",
+              ].join(" "),
+              ConditionExpression: "id = :id AND #status IN (:queued, :running)",
+              ExpressionAttributeNames: { "#status": "status" },
+              ExpressionAttributeValues: {
+                ":id": jobId,
+                ":queued": "QUEUED",
+                ":running": "RUNNING",
+                ":at": at,
+                ":one": 1,
+                ":succeeded": result.status === "SUCCEEDED" ? 1 : 0,
+                ":failed": result.status === "FAILED" ? 1 : 0,
+                ":inputTokens": result.inputTokens,
+                ":outputTokens": result.outputTokens,
+              },
+            },
+          },
+        ],
+      }));
+    } catch (error) {
+      if (!isConditionalFailure(error)) throw error;
+    }
+
+    let job = await this.getOrdinanceSummaryJob();
+    if (!job || job.id !== jobId) throw new Error("Ordinance summary job was not found");
+    if (job.processedCount >= job.total && (job.status === "QUEUED" || job.status === "RUNNING")) {
+      const completedStatus = job.failedCount > 0 ? "COMPLETED_WITH_ERRORS" : "COMPLETED";
+      try {
+        const completed = await this.#client.send(new UpdateCommand({
+          TableName: this.#tableName,
+          Key: { pk: "ORDINANCE_SUMMARY", sk: "ACTIVE" },
+          UpdateExpression: "SET #status = :status, completedAt = if_not_exists(completedAt, :at), updatedAt = :at",
+          ConditionExpression: "id = :id AND processedCount >= total AND #status IN (:queued, :running)",
+          ExpressionAttributeNames: { "#status": "status" },
+          ExpressionAttributeValues: {
+            ":id": jobId,
+            ":queued": "QUEUED",
+            ":running": "RUNNING",
+            ":status": completedStatus,
+            ":at": at,
+          },
+          ReturnValues: "ALL_NEW",
+        }));
+        job = fromItem<OrdinanceSummaryJob>(completed.Attributes ?? {});
+      } catch (error) {
+        if (!isConditionalFailure(error)) throw error;
+        const current = await this.getOrdinanceSummaryJob();
+        if (!current || current.id !== jobId
+          || (current.status !== "COMPLETED" && current.status !== "COMPLETED_WITH_ERRORS")) {
+          throw error;
+        }
+        job = current;
+      }
+    }
+    return job;
+  }
+
   async reserveDelivery(value: DeliveryReservation): Promise<boolean> {
     try {
       await this.#client.send(new PutCommand({
@@ -710,6 +1009,40 @@ function isTransactionConflict(error: unknown): boolean {
     : undefined;
   return reasons === undefined || reasons.some((reason) =>
     reason.Code === "ConditionalCheckFailed" || reason.Code === "TransactionConflict");
+}
+
+const BULK_REVIEW_MAX_ATTEMPTS = 5;
+const BULK_REVIEW_RETRY_BASE_MS = 100;
+const BULK_REVIEW_RETRY_CAP_MS = 2_000;
+const BULK_REVIEW_RETRYABLE_ERROR_NAMES = new Set([
+  "InternalServerError",
+  "InternalServerErrorException",
+  "ProvisionedThroughputExceededException",
+  "ThrottlingException",
+  "RequestLimitExceeded",
+  "TransactionInProgressException",
+  "TimeoutError",
+]);
+const BULK_REVIEW_RETRYABLE_CANCELLATION_CODES = new Set([
+  "TransactionConflict",
+  "ProvisionedThroughputExceeded",
+  "ThrottlingError",
+]);
+
+function isBulkReviewRetryable(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const name = "name" in error ? (error as { name?: string }).name : undefined;
+  if (name && BULK_REVIEW_RETRYABLE_ERROR_NAMES.has(name)) return true;
+  const statusCode = "$metadata" in error
+    ? (error as { $metadata?: { httpStatusCode?: number } }).$metadata?.httpStatusCode
+    : undefined;
+  if (statusCode !== undefined && statusCode >= 500) return true;
+  if (name !== "TransactionCanceledException" || !("CancellationReasons" in error)) return false;
+  const reasons = (error as { CancellationReasons?: Array<{ Code?: string }> }).CancellationReasons;
+  if (!reasons?.length) return false;
+  const codes = reasons.map((reason) => reason.Code).filter((code): code is string => code !== undefined);
+  return codes.some((code) => BULK_REVIEW_RETRYABLE_CANCELLATION_CODES.has(code))
+    && codes.every((code) => code === "None" || BULK_REVIEW_RETRYABLE_CANCELLATION_CODES.has(code));
 }
 
 const PUBLICATION_TRANSACTION_SIZE = 25;

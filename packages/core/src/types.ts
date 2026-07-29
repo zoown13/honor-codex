@@ -42,6 +42,15 @@ export interface BenefitValidity {
   checkedAt: string;
 }
 
+export interface BenefitSummaryProvenance {
+  kind: "AI";
+  modelId: string;
+  generatedAt: string;
+  sourceContentHash: string;
+  inputTokens?: number;
+  outputTokens?: number;
+}
+
 export interface Benefit {
   id: string;
   type: BenefitType;
@@ -66,6 +75,7 @@ export interface Benefit {
   source: BenefitSource;
   evidence: Evidence[];
   reviewState: ReviewState;
+  summaryProvenance?: BenefitSummaryProvenance;
   updatedAt: string;
   searchText: string;
 }

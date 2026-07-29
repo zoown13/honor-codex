@@ -1,4 +1,4 @@
-import { sha256Hex, withPublicOrdinanceUrls } from "@honor/core";
+import { publicOrdinanceUrl, sha256Hex, withPublicOrdinanceUrls } from "@honor/core";
 import type { Benefit, BenefitChange, BenefitChangeSource, ChangeStatus } from "@honor/core";
 import { BulkReviewConflictError } from "../shared/contracts.js";
 import type {
@@ -29,7 +29,13 @@ const SOURCE_LABELS: Readonly<Record<BenefitChangeSource, string>> = {
 const MAX_PAGE_SIZE = 100;
 const MAX_BULK_COUNT = 2_500;
 const MAX_BULK_CHUNK = 100;
-const BULK_REVIEW_REASON = "INITIAL_BASELINE_BULK_APPROVAL";
+const BASELINE_BULK_REVIEW_REASON = "INITIAL_BASELINE_BULK_APPROVAL";
+const AI_SUMMARY_BULK_REVIEW_REASON = "AI_ORDINANCE_SUMMARY_BULK_APPROVAL";
+const BULK_REVIEW_REASONS = new Set([BASELINE_BULK_REVIEW_REASON, AI_SUMMARY_BULK_REVIEW_REASON]);
+const AI_SUMMARY_CHANGED_FIELDS = new Set([
+  "amount", "benefitKind", "constraints", "eligibility", "howToUse",
+  "requiredProof", "reviewState", "summary", "summaryProvenance",
+]);
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 
@@ -43,6 +49,12 @@ export function createAdminReviewsHandler(
     const reviewBatchPath = event.rawPath.startsWith("/v1/admin/review-batches")
       || event.rawPath.startsWith("/v1/pilot-admin/review-batches");
     if (method(event) === "GET") {
+      const reviewId = event.pathParameters?.reviewId || event.pathParameters?.id;
+      if (reviewId && !reviewBatchPath) {
+        const change = await deps.repository.getChange(reviewId);
+        if (!change) throw new HttpError(404, "검수 변경을 찾을 수 없습니다.");
+        return json(200, sanitizeReviewChange(change));
+      }
       if (reviewBatchPath) {
         const batchId = event.pathParameters?.batchId;
         if (batchId !== undefined) {
@@ -69,6 +81,20 @@ export function createAdminReviewsHandler(
           }
         }
 
+        if (batchId === undefined) {
+          const summaryChanges = await deps.repository.listReviewSummaryChanges();
+          const pending = summaryChanges.filter((change) => change.status === "PENDING");
+          const groups = summarizePendingGroups(summaryChanges);
+          return json(200, {
+            groups: groups.map((group) => ({
+              ...group,
+              samples: group.samples.map(sanitizeReviewListChange),
+            })),
+            unclassifiedCount: pending.filter((change) => inferReviewSource(change) === undefined).length,
+            generatedAt: (deps.clock ?? systemClock).now().toISOString(),
+          });
+        }
+
         // Compatibility path for the already-deployed web client. New clients
         // include source, detectedAt, and total so detail pages never load the
         // complete change partition before applying the cursor.
@@ -88,16 +114,13 @@ export function createAdminReviewsHandler(
           const offset = cursorIndex + 1;
           const items = changes.slice(offset, offset + limit);
           const nextCursor = offset + items.length < changes.length ? items.at(-1)?.id : undefined;
-          return json(200, { batch, items: items.map(sanitizeReviewChange), total: changes.length, ...(nextCursor ? { nextCursor } : {}) });
+          return json(200, {
+            batch: { ...batch, samples: batch.samples.map(sanitizeReviewListChange) },
+            items: items.map(sanitizeReviewChange),
+            total: changes.length,
+            ...(nextCursor ? { nextCursor } : {}),
+          });
         }
-        return json(200, {
-          groups: groups.map((group) => ({
-            ...group,
-            samples: group.samples.map(sanitizeReviewListChange),
-          })),
-          unclassifiedCount: pending.filter((change) => inferReviewSource(change) === undefined).length,
-          generatedAt: (deps.clock ?? systemClock).now().toISOString(),
-        });
       }
       const requested = event.queryStringParameters?.status;
       if (requested && !STATUSES.has(requested as ChangeStatus)) throw new HttpError(400, "status가 올바르지 않습니다.");
@@ -163,6 +186,7 @@ interface ReviewGroupSummary {
   actionCounts: Record<BenefitChange["action"], number>;
   riskCounts: Record<BenefitChange["risk"], number>;
   samples: BenefitChange[];
+  approvalKind?: "INITIAL_BASELINE" | "AI_SUMMARY";
 }
 
 interface OptimizedBatchPageRequest {
@@ -203,15 +227,20 @@ export function summarizePendingGroups(changes: readonly BenefitChange[]): Revie
   return [...grouped.values()].map(({ source, detectedAt, items }) => {
     const sorted = [...items].sort((a, b) => a.id.localeCompare(b.id));
     const count = sorted.length;
-    const baselineEligible = sorted.every((change) => isEligibleBaselineChange(change, source, detectedAt));
+    const approvalKind = sorted.every((change) => isEligibleBaselineChange(change, source, detectedAt))
+      ? "INITIAL_BASELINE" as const
+      : sorted.every((change) => isEligibleAiSummaryChange(change, source, detectedAt))
+        ? "AI_SUMMARY" as const
+        : undefined;
     const onlyDetectedAtForSource = detectedAtBySource.get(source)?.size === 1
       && detectedAtBySource.get(source)?.has(detectedAt) === true;
-    const eligible = count <= MAX_BULK_COUNT && baselineEligible && onlyDetectedAtForSource;
+    const timestampEligible = approvalKind === "AI_SUMMARY" || onlyDetectedAtForSource;
+    const eligible = count <= MAX_BULK_COUNT && approvalKind !== undefined && timestampEligible;
     const ineligibleReason = count > MAX_BULK_COUNT
       ? `한 번에 승인할 수 있는 최대 ${MAX_BULK_COUNT}건을 초과했습니다.`
-      : !baselineEligible
-        ? "같은 수집 시각의 변경에 초기 ADD가 아닌 항목이 섞여 있습니다."
-        : !onlyDetectedAtForSource
+      : approvalKind === undefined
+        ? "같은 처리 시각의 변경에 안전한 초기 데이터 또는 AI 정제 결과가 아닌 항목이 섞여 있습니다."
+        : !timestampEligible
           ? "이 원천에 다른 수집 시각의 변경 이력이 있어 초기 기준선으로 일괄 승인할 수 없습니다."
         : undefined;
     const fingerprint = fingerprintChangeIds(sorted.map((change) => change.id));
@@ -223,6 +252,7 @@ export function summarizePendingGroups(changes: readonly BenefitChange[]): Revie
       count,
       fingerprint,
       eligible,
+      ...(approvalKind ? { approvalKind } : {}),
       ...(ineligibleReason ? { ineligibleReason } : {}),
       confirmationPhrase: `APPROVE ${source} ${count}`,
       actionCounts: {
@@ -234,7 +264,7 @@ export function summarizePendingGroups(changes: readonly BenefitChange[]): Revie
         LOW: sorted.filter((change) => change.risk === "LOW").length,
         HIGH: sorted.filter((change) => change.risk === "HIGH").length,
       },
-      samples: sorted.slice(0, 5).map(sanitizeReviewChange),
+      samples: sorted.slice(0, 5),
     };
   }).sort((a, b) => b.detectedAt.localeCompare(a.detectedAt) || a.source.localeCompare(b.source));
 }
@@ -283,8 +313,9 @@ async function reviewBulkGroup(
     if (!group.length || group.length > MAX_BULK_COUNT) {
       throw new HttpError(409, `일괄 승인은 1건 이상 ${MAX_BULK_COUNT}건 이하만 가능합니다.`);
     }
-    if (!group.every((change) => isEligibleBaselineChange(change, request.source, request.detectedAt))) {
-      throw new HttpError(409, "선택한 그룹은 안전한 초기 일괄 승인 조건을 충족하지 않습니다.");
+    const reviewReason = bulkReviewReason(group, request.source, request.detectedAt);
+    if (!reviewReason) {
+      throw new HttpError(409, "선택한 그룹은 안전한 초기 데이터 또는 AI 정제 일괄 승인 조건을 충족하지 않습니다.");
     }
     if (fingerprintChangeIds(group.map((change) => change.id)) !== request.fingerprint) {
       throw new HttpError(409, "변경 목록이 미리보기 이후 달라졌습니다. 새로고침 후 다시 확인해 주세요.");
@@ -297,7 +328,7 @@ async function reviewBulkGroup(
       expectedCount: request.expectedCount,
       changeIds: group.map((change) => change.id),
       reviewer,
-      reason: BULK_REVIEW_REASON,
+      reason: reviewReason,
       status: "IN_PROGRESS",
       approvedCount: 0,
       createdAt: at,
@@ -364,7 +395,7 @@ function assertMatchingOperation(
     || operation.expectedCount !== request.expectedCount
     || operation.fingerprint !== request.fingerprint
     || operation.reviewer !== reviewer
-    || operation.reason !== BULK_REVIEW_REASON) {
+    || !BULK_REVIEW_REASONS.has(operation.reason)) {
     throw new HttpError(409, "operationId가 다른 일괄 승인 요청에 이미 사용되었습니다.");
   }
   if (operation.changeIds.length !== operation.expectedCount
@@ -387,6 +418,45 @@ function isEligibleBaselineChange(
     && inferReviewSource(change) === source;
 }
 
+
+function isEligibleAiSummaryChange(
+  change: BenefitChange,
+  source: BenefitChangeSource,
+  detectedAt: string,
+): boolean {
+  const before = change.before;
+  const after = change.after;
+  const provenance = after?.summaryProvenance;
+  return source === "LAW_ORDINANCES"
+    && change.status === "PENDING"
+    && change.risk === "HIGH"
+    && change.action === "UPDATE"
+    && before !== undefined
+    && after !== undefined
+    && before.id === after.id
+    && before.source.contentHash === after.source.contentHash
+    && provenance?.kind === "AI"
+    && provenance.sourceContentHash === after.source.contentHash
+    && after.reviewState === "SOURCE_ONLY"
+    && change.detectedAt === detectedAt
+    && inferReviewSource(change) === source
+    && change.changedFields.length > 0
+    && change.changedFields.every((field) => AI_SUMMARY_CHANGED_FIELDS.has(field));
+}
+
+function bulkReviewReason(
+  changes: readonly BenefitChange[],
+  source: BenefitChangeSource,
+  detectedAt: string,
+): string | undefined {
+  if (changes.every((change) => isEligibleBaselineChange(change, source, detectedAt))) {
+    return BASELINE_BULK_REVIEW_REASON;
+  }
+  if (changes.every((change) => isEligibleAiSummaryChange(change, source, detectedAt))) {
+    return AI_SUMMARY_BULK_REVIEW_REASON;
+  }
+  return undefined;
+}
 function sanitizeReviewChange(change: BenefitChange): BenefitChange {
   return {
     ...change,
@@ -410,13 +480,16 @@ function sanitizeReviewListChange(change: BenefitChange) {
 }
 
 function sanitizeReviewListBenefit(benefit: Benefit) {
-  const safe = withPublicOrdinanceUrls(benefit);
+  const source = benefit.type === "ORDINANCE"
+    ? { ...benefit.source, url: publicOrdinanceUrl(benefit.source.url, benefit.source.id, benefit.title) }
+    : benefit.source;
   return {
-    id: safe.id,
-    type: safe.type,
-    title: safe.title,
-    provider: safe.provider,
-    source: safe.source,
+    id: benefit.id,
+    type: benefit.type,
+    title: benefit.title,
+    provider: benefit.provider,
+    source,
+    ...(benefit.summaryProvenance ? { summaryProvenance: benefit.summaryProvenance } : {}),
   };
 }
 

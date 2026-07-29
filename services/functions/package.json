@@ -12,11 +12,13 @@
   },
   "dependencies": {
     "@aws-sdk/client-amplify": "^3.900.0",
+    "@aws-sdk/client-bedrock-runtime": "^3.1095.0",
     "@aws-sdk/client-cognito-identity-provider": "^3.900.0",
     "@aws-sdk/client-dynamodb": "^3.900.0",
     "@aws-sdk/client-lambda": "^3.900.0",
     "@aws-sdk/client-s3": "^3.900.0",
     "@aws-sdk/client-sesv2": "^3.900.0",
+    "@aws-sdk/client-sqs": "^3.1095.0",
     "@aws-sdk/lib-dynamodb": "^3.900.0",
     "@honor/core": "workspace:*",
     "web-push": "^3.6.7"

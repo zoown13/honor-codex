@@ -2776,3 +2776,222 @@ a {
     animation-iteration-count: 1 !important;
   }
 }
+
+.admin-operations {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+  margin: 1.25rem 0;
+}
+
+.admin-operation-card {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  padding: 1.15rem;
+  border: 1px solid var(--line);
+  border-radius: 1rem;
+  background: var(--surface);
+}
+
+.admin-operation-card__heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.admin-operation-card__heading h3 {
+  margin: 0.25rem 0 0;
+}
+
+.admin-operation-card > p,
+.admin-model-id {
+  margin: 0;
+  color: var(--ink-muted);
+}
+
+.admin-operation-card form,
+.admin-operation-card fieldset {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.admin-operation-card fieldset {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.admin-operation-card legend {
+  margin-bottom: 0.5rem;
+  font-weight: 700;
+}
+
+.admin-source-choice {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.65rem;
+  min-height: 2.75rem;
+  padding: 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: 0.75rem;
+}
+
+.admin-source-choice input,
+.admin-operation-card .review-acknowledgement input {
+  width: 1.15rem;
+  height: 1.15rem;
+  margin-top: 0.15rem;
+}
+
+.admin-cost-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.6rem;
+  margin: 0;
+}
+
+.admin-cost-grid div {
+  padding: 0.75rem;
+  border-radius: 0.75rem;
+  background: var(--surface-soft);
+}
+
+.admin-cost-grid dt {
+  color: var(--ink-muted);
+  font-size: 0.8rem;
+}
+
+.admin-cost-grid dd {
+  margin: 0.2rem 0 0;
+  font-weight: 800;
+}
+
+.admin-job-progress {
+  display: grid;
+  gap: 0.45rem;
+  padding: 0.9rem;
+  border-radius: 0.8rem;
+  background: var(--accent-soft);
+}
+
+.admin-job-progress progress {
+  width: 100%;
+}
+
+@media (max-width: 820px) {
+  .admin-operations {
+    grid-template-columns: 1fr;
+  }
+
+  .admin-operation-card__heading {
+    flex-direction: column;
+  }
+}
+
+.ai-summary-badge {
+  display: inline-flex;
+  width: fit-content;
+  margin-top: 0.6rem;
+  padding: 0.35rem 0.6rem;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.evidence-details {
+  margin-top: 0.8rem;
+  border: 1px solid var(--line);
+  border-radius: 0.75rem;
+}
+
+.evidence-details summary {
+  min-height: 2.75rem;
+  padding: 0.75rem;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.evidence-details .evidence {
+  margin: 0 0.75rem 0.75rem;
+}
+
+.review-list article > .review-list__actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.55rem;
+  flex: 0 0 auto;
+}
+
+.review-list__actions .secondary-button {
+  min-height: 2.5rem;
+  padding: 0.55rem 0.75rem;
+}
+
+.review-detail-backdrop {
+  z-index: 80;
+}
+
+.review-detail-dialog {
+  width: min(760px, calc(100vw - 2rem));
+  max-height: min(88vh, 900px);
+  overflow-y: auto;
+}
+
+.review-ai-note {
+  display: grid;
+  gap: 0.25rem;
+  padding: 0.9rem;
+  border-radius: 0.8rem;
+  background: var(--accent-soft);
+}
+
+.review-detail-summary,
+.review-detail-grid section {
+  padding: 0.9rem;
+  border: 1px solid var(--line);
+  border-radius: 0.8rem;
+}
+
+.review-detail-summary h4,
+.review-detail-grid h4 {
+  margin: 0 0 0.55rem;
+}
+
+.review-detail-summary p,
+.review-detail-grid ul {
+  margin: 0;
+}
+
+.review-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.review-detail-grid ul {
+  padding-left: 1.1rem;
+}
+
+.review-detail-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.65rem;
+}
+
+@media (max-width: 640px) {
+  .review-list article > .review-list__actions,
+  .review-detail-actions {
+    width: 100%;
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .review-detail-grid {
+    grid-template-columns: 1fr;
+  }
+}

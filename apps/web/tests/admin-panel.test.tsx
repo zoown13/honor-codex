@@ -20,7 +20,8 @@ describe("AdminPanel", () => {
     expect(await screen.findByRole("heading", { name: "병무청 예우시설" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "병무청 전국 혜택 공지" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "법제처 지자체 조례" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /게시/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "승인 데이터를 서비스에 게시" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "조례 핵심 내용 AI 정제" })).toBeInTheDocument();
     expect(screen.getByText("승인과 게시는 분리되어 있습니다")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "병무청 예우시설 1건 일괄 승인" }));
