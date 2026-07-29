@@ -2,6 +2,7 @@
   "name": "honor-benefits-pilot",
   "version": "0.1.0",
   "private": true,
+  "license": "Apache-2.0",
   "description": "병역명문가 혜택찾기 비공개 파일럿",
   "packageManager": "pnpm@11.5.3",
   "engines": {
