@@ -135,6 +135,7 @@ export interface PublishStatusResponse {
 export interface OrdinanceSummaryJobView {
   id: string;
   modelId: string;
+  promptVersion?: string;
   status: "QUEUED" | "RUNNING" | "COMPLETED" | "COMPLETED_WITH_ERRORS" | "FAILED";
   candidatePoolCount: number;
   total: number;
@@ -705,6 +706,7 @@ export async function startOrdinanceSummary(
   const job: OrdinanceSummaryJobView = {
     id: makeId("aisum"),
     modelId: status.modelId,
+    promptVersion: "v2-honorable-family-focused",
     status: "COMPLETED",
     candidatePoolCount: status.candidatePoolCount,
     total: status.estimate.itemCount,

@@ -86,6 +86,7 @@ export interface OrdinanceSummary {
 export interface OrdinanceSummaryCache {
   cacheKey: string;
   modelId: string;
+  promptVersion?: string;
   sourceContentHash: string;
   value: OrdinanceSummary;
   inputTokens: number;
@@ -97,6 +98,7 @@ export interface OrdinanceSummaryJob {
   id: string;
   fingerprint: string;
   modelId: string;
+  promptVersion?: string;
   candidatePoolCount: number;
   candidateKeys: string[];
   status: "QUEUED" | "RUNNING" | "COMPLETED" | "COMPLETED_WITH_ERRORS" | "FAILED";

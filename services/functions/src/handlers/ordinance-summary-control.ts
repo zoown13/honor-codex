@@ -7,6 +7,7 @@ import { inferReviewSource } from "../shared/ingestion.js";
 import {
   DEFAULT_SUMMARY_MODEL_ID,
   DEFAULT_SUMMARY_SAMPLE_SIZE,
+  ORDINANCE_SUMMARY_PROMPT_VERSION,
   actualSummaryCostUsd,
   estimateOrdinanceSummaryCost,
   ordinanceSummaryCandidates,
@@ -102,11 +103,12 @@ export function createOrdinanceSummaryControlHandler(
     }
 
     const now = (deps.clock ?? systemClock).now().toISOString();
-    const fingerprint = summaryJobFingerprint(modelId, candidates);
+    const fingerprint = summaryJobFingerprint(modelId, candidates, ORDINANCE_SUMMARY_PROMPT_VERSION);
     const proposed: OrdinanceSummaryJob = {
       id: `aisum:${fingerprint.slice(0, 32)}`,
       fingerprint,
       modelId,
+      promptVersion: ORDINANCE_SUMMARY_PROMPT_VERSION,
       candidatePoolCount: candidatePool.length,
       candidateKeys: candidates.map(summaryCandidateKey),
       status: "QUEUED",

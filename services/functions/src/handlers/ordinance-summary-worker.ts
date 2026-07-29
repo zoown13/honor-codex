@@ -109,7 +109,7 @@ async function dispatchJob(
     throw new Error("An ordinance summary sample changed after owner confirmation");
   }
   const benefits = selected as Benefit[];
-  if (summaryJobFingerprint(job.modelId, benefits) !== job.fingerprint) {
+  if (summaryJobFingerprint(job.modelId, benefits, job.promptVersion) !== job.fingerprint) {
     throw new Error("Ordinance summary job fingerprint no longer matches the selected sample");
   }
   const queuedCount = await deps.queue.send(job.id, benefits);
@@ -135,13 +135,15 @@ async function summarizeItem(
   if (job.status === "FAILED") throw new Error("Ordinance summary job is already failed");
   if (message.benefit.type !== "ORDINANCE") throw new Error("Summary queue item is not an ordinance");
 
-  const cacheKey = `v1:${sha256Hex(`${job.modelId}\n${message.benefit.source.contentHash}`)}`;
+  const promptVersion = job.promptVersion ?? "v1";
+  const cacheKey = `${promptVersion}:${sha256Hex(`${job.modelId}\n${message.benefit.source.contentHash}`)}`;
   let cached = await deps.repository.getOrdinanceSummaryCache(cacheKey);
   if (!cached) {
     const generated = await deps.summarizer.summarize(message.benefit, job.modelId);
     cached = {
       cacheKey,
       modelId: job.modelId,
+      promptVersion,
       sourceContentHash: message.benefit.source.contentHash,
       value: generated.value,
       inputTokens: generated.inputTokens,

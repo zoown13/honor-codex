@@ -4,6 +4,7 @@ import type { OrdinanceSummary } from "./contracts.js";
 
 export const DEFAULT_SUMMARY_MODEL_ID = "global.amazon.nova-2-lite-v1:0";
 export const DEFAULT_SUMMARY_SAMPLE_SIZE = 10;
+export const ORDINANCE_SUMMARY_PROMPT_VERSION = "v2-honorable-family-focused";
 export const NOVA_2_LITE_INPUT_USD_PER_MILLION = 0.30;
 export const NOVA_2_LITE_OUTPUT_USD_PER_MILLION = 2.50;
 export const DEFAULT_MAX_SUMMARY_INPUT_CHARS = 24_000;
@@ -63,8 +64,13 @@ export function selectOrdinanceSummarySample(
   return selected;
 }
 
-export function summaryJobFingerprint(modelId: string, benefits: readonly Benefit[]): string {
+export function summaryJobFingerprint(
+  modelId: string,
+  benefits: readonly Benefit[],
+  promptVersion?: string,
+): string {
   return sha256Hex([
+    ...(promptVersion ? [promptVersion] : []),
     modelId,
     ...benefits.map(summaryCandidateKey).sort(),
   ].join("\n"));

@@ -190,6 +190,7 @@ describe("ordinance AI summary", () => {
     expect(dispatch).toHaveBeenCalledOnce();
     expect(JSON.parse(started.body).job).not.toHaveProperty("candidateKeys");
     expect(repository.ordinanceSummaryJob).toMatchObject({
+      promptVersion: "v2-honorable-family-focused",
       candidatePoolCount: 1,
       candidateKeys: [summaryCandidateKey(ordinance)],
       total: 1,
@@ -225,6 +226,7 @@ describe("ordinance AI summary", () => {
     expect(repository.changes[0]).toMatchObject({ status: "PENDING", risk: "HIGH", source: "LAW_ORDINANCES" });
     expect(repository.ordinanceSummaryJob).toMatchObject({ status: "COMPLETED", succeededCount: 1, inputTokens: 900, outputTokens: 120 });
     expect(repository.ordinanceSummaryCache.size).toBe(1);
+    expect([...repository.ordinanceSummaryCache.keys()][0]).toMatch(/^v2-honorable-family-focused:/);
   });
 
   it("repairs a fully processed active job when status is read", async () => {
