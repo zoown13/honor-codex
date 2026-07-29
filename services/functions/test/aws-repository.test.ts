@@ -248,6 +248,9 @@ describe("DynamoAppRepository ordinance summary progress", () => {
     expect(progressUpdate?.UpdateExpression).toBe(
       "SET updatedAt = :at ADD processedCount :one, succeededCount :succeeded, failedCount :failed, inputTokens :inputTokens, outputTokens :outputTokens",
     );
+    const completion = send.mock.calls.find(([command]) => command instanceof UpdateCommand)?.[0] as UpdateCommand;
+    expect(completion.input.ConditionExpression).toContain("processedCount >= #total");
+    expect(completion.input.ExpressionAttributeNames).toMatchObject({ "#total": "total" });
     expect(getCount).toBe(2);
   });
 });

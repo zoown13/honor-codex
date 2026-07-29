@@ -97,6 +97,8 @@ export interface OrdinanceSummaryJob {
   id: string;
   fingerprint: string;
   modelId: string;
+  candidatePoolCount: number;
+  candidateKeys: string[];
   status: "QUEUED" | "RUNNING" | "COMPLETED" | "COMPLETED_WITH_ERRORS" | "FAILED";
   total: number;
   queuedCount: number;
@@ -186,6 +188,7 @@ export interface AppRepository {
   getOrdinanceSummaryJob(): Promise<OrdinanceSummaryJob | undefined>;
   beginOrdinanceSummaryJob(value: OrdinanceSummaryJob): Promise<OrdinanceSummaryJob>;
   markOrdinanceSummaryJobRunning(jobId: string, queuedCount: number, at: string): Promise<OrdinanceSummaryJob>;
+  reconcileOrdinanceSummaryJob(jobId: string, at: string): Promise<OrdinanceSummaryJob>;
   failOrdinanceSummaryJob(jobId: string, at: string, error: string): Promise<void>;
   getOrdinanceSummaryCache(cacheKey: string): Promise<OrdinanceSummaryCache | undefined>;
   putOrdinanceSummaryCache(value: OrdinanceSummaryCache): Promise<void>;

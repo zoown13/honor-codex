@@ -293,6 +293,19 @@ export class FakeRepository implements AppRepository {
     };
     return this.ordinanceSummaryJob;
   }
+  async reconcileOrdinanceSummaryJob(jobId: string, at: string) {
+    const job = this.requireOrdinanceSummaryJob(jobId);
+    if (["COMPLETED", "COMPLETED_WITH_ERRORS", "FAILED"].includes(job.status) || job.processedCount < job.total) {
+      return job;
+    }
+    this.ordinanceSummaryJob = {
+      ...job,
+      status: job.failedCount > 0 ? "COMPLETED_WITH_ERRORS" : "COMPLETED",
+      completedAt: job.completedAt ?? at,
+      updatedAt: at,
+    };
+    return this.ordinanceSummaryJob;
+  }
   async failOrdinanceSummaryJob(jobId: string, at: string, error: string) {
     const job = this.requireOrdinanceSummaryJob(jobId);
     this.ordinanceSummaryJob = { ...job, status: "FAILED", failedAt: at, updatedAt: at, error };
@@ -318,13 +331,9 @@ export class FakeRepository implements AppRepository {
         inputTokens: job.inputTokens + result.inputTokens,
         outputTokens: job.outputTokens + result.outputTokens,
         updatedAt: at,
-        ...(processedCount >= job.total ? {
-          status: failedCount > 0 ? "COMPLETED_WITH_ERRORS" : "COMPLETED",
-          completedAt: at,
-        } : {}),
       };
     }
-    return this.ordinanceSummaryJob!;
+    return this.reconcileOrdinanceSummaryJob(jobId, at);
   }
   private requireOrdinanceSummaryJob(id: string) {
     if (!this.ordinanceSummaryJob || this.ordinanceSummaryJob.id !== id) {

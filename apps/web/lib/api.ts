@@ -136,6 +136,7 @@ export interface OrdinanceSummaryJobView {
   id: string;
   modelId: string;
   status: "QUEUED" | "RUNNING" | "COMPLETED" | "COMPLETED_WITH_ERRORS" | "FAILED";
+  candidatePoolCount: number;
   total: number;
   queuedCount: number;
   processedCount: number;
@@ -160,6 +161,8 @@ export interface OrdinanceSummaryStatusResponse {
     estimatedOutputTokens: number;
     estimatedCostUsd: number;
   };
+  candidatePoolCount: number;
+  sampleSize: number;
   actualCostUsd: number;
   confirmationPhrase: string;
   ordinanceChangesAwaitingPublish: number;
@@ -661,11 +664,12 @@ export async function getOrdinanceSummaryStatus(): Promise<OrdinanceSummaryStatu
     return pilotAdminRequest<OrdinanceSummaryStatusResponse>("/v1/pilot-admin/ordinance-summaries");
   }
   const ordinances = benefits.filter((benefit) => benefit.type === "ORDINANCE" && !benefit.summaryProvenance);
+  const sample = ordinances.slice(0, 10);
   const estimate = {
-    itemCount: ordinances.length,
-    estimatedInputTokens: ordinances.length * 1_000,
-    estimatedOutputTokens: ordinances.length * 600,
-    estimatedCostUsd: ordinances.length ? 0.01 : 0
+    itemCount: sample.length,
+    estimatedInputTokens: sample.length * 1_000,
+    estimatedOutputTokens: sample.length * 600,
+    estimatedCostUsd: sample.length ? 0.03 : 0
   };
   const stored = readJson<{ job?: OrdinanceSummaryJobView }>("honor-pilot-summary-job", {});
   const ordinanceChangesAwaitingPublish = storedChanges().filter((change) =>
@@ -675,6 +679,8 @@ export async function getOrdinanceSummaryStatus(): Promise<OrdinanceSummaryStatu
     modelId: "global.amazon.nova-2-lite-v1:0",
     ...stored,
     estimate,
+    candidatePoolCount: ordinances.length,
+    sampleSize: sample.length,
     actualCostUsd: stored.job ? stored.job.estimatedCostUsd : 0,
     confirmationPhrase: `SUMMARIZE ${estimate.itemCount}`,
     ordinanceChangesAwaitingPublish,
@@ -700,6 +706,7 @@ export async function startOrdinanceSummary(
     id: makeId("aisum"),
     modelId: status.modelId,
     status: "COMPLETED",
+    candidatePoolCount: status.candidatePoolCount,
     total: status.estimate.itemCount,
     queuedCount: status.estimate.itemCount,
     processedCount: status.estimate.itemCount,

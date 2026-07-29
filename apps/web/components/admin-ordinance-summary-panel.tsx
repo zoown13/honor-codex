@@ -85,12 +85,15 @@ export function AdminOrdinanceSummaryPanel({ onCompleted }: { onCompleted?: () =
           {loading ? "계산 중…" : "비용·상태 새로고침"}
         </button>
       </div>
-      <p>원문을 대상, 혜택, 준비물, 이용 방법, 주의사항으로 정리합니다. AI 결과는 자동 게시하지 않고 다시 검수함으로 보냅니다.</p>
+      <p>여러 지자체에 분산된 10건 표본을 먼저 대상, 혜택, 준비물, 이용 방법, 주의사항으로 정리합니다. AI 결과는 자동 게시하지 않고 다시 검수함으로 보냅니다.</p>
 
       {status ? (
         <>
           <dl className="admin-cost-grid">
-            <div><dt>대상 조례</dt><dd>{status.estimate.itemCount.toLocaleString("ko-KR")}건</dd></div>
+            <div>
+              <dt>테스트 표본</dt>
+              <dd>{status.sampleSize.toLocaleString("ko-KR")}건 / 전체 {status.candidatePoolCount.toLocaleString("ko-KR")}건</dd>
+            </div>
             <div><dt>예상 최대 비용</dt><dd>US ${status.estimate.estimatedCostUsd.toFixed(2)}</dd></div>
             <div><dt>작업 비용 상한</dt><dd>US ${status.maxJobCostUsd.toFixed(2)}</dd></div>
             <div><dt>현재 실비</dt><dd>US ${status.actualCostUsd.toFixed(2)}</dd></div>
@@ -125,7 +128,7 @@ export function AdminOrdinanceSummaryPanel({ onCompleted }: { onCompleted?: () =
                 type="submit"
                 disabled={!status.canStart || submitting || !acknowledged || confirmation !== status.confirmationPhrase}
               >
-                {submitting ? "작업 등록 중…" : "AI 정제 시작"}
+                {submitting ? "작업 등록 중…" : `${status.sampleSize.toLocaleString("ko-KR")}건 표본 AI 정제 시작`}
               </button>
               {!status.canStart && status.ordinanceChangesAwaitingPublish > 0 ? (
                 <p className="review-ineligible">기존 조례 변경 {status.ordinanceChangesAwaitingPublish.toLocaleString("ko-KR")}건을 검수·게시한 뒤 시작할 수 있습니다.</p>

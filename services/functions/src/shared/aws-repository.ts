@@ -801,6 +801,42 @@ export class DynamoAppRepository implements AppRepository {
     }));
   }
 
+  async reconcileOrdinanceSummaryJob(jobId: string, at: string): Promise<OrdinanceSummaryJob> {
+    const job = await this.getOrdinanceSummaryJob();
+    if (!job || job.id !== jobId) throw new Error("Ordinance summary job was not found");
+    if (job.status === "COMPLETED" || job.status === "COMPLETED_WITH_ERRORS" || job.status === "FAILED") {
+      return job;
+    }
+    if (job.processedCount < job.total) return job;
+    const completedStatus = job.failedCount > 0 ? "COMPLETED_WITH_ERRORS" : "COMPLETED";
+    try {
+      const completed = await this.#client.send(new UpdateCommand({
+        TableName: this.#tableName,
+        Key: { pk: "ORDINANCE_SUMMARY", sk: "ACTIVE" },
+        UpdateExpression: "SET #status = :status, completedAt = if_not_exists(completedAt, :at), updatedAt = :at",
+        ConditionExpression: "id = :id AND processedCount >= #total AND #status IN (:queued, :running)",
+        ExpressionAttributeNames: { "#status": "status", "#total": "total" },
+        ExpressionAttributeValues: {
+          ":id": jobId,
+          ":queued": "QUEUED",
+          ":running": "RUNNING",
+          ":status": completedStatus,
+          ":at": at,
+        },
+        ReturnValues: "ALL_NEW",
+      }));
+      return fromItem<OrdinanceSummaryJob>(completed.Attributes ?? {});
+    } catch (error) {
+      if (!isConditionalFailure(error)) throw error;
+      const current = await this.getOrdinanceSummaryJob();
+      if (!current || current.id !== jobId
+        || (current.status !== "COMPLETED" && current.status !== "COMPLETED_WITH_ERRORS")) {
+        throw error;
+      }
+      return current;
+    }
+  }
+
   async getOrdinanceSummaryCache(cacheKey: string): Promise<OrdinanceSummaryCache | undefined> {
     const result = await this.#client.send(new GetCommand({
       TableName: this.#tableName,
@@ -877,38 +913,7 @@ export class DynamoAppRepository implements AppRepository {
       if (!isConditionalFailure(error)) throw error;
     }
 
-    let job = await this.getOrdinanceSummaryJob();
-    if (!job || job.id !== jobId) throw new Error("Ordinance summary job was not found");
-    if (job.processedCount >= job.total && (job.status === "QUEUED" || job.status === "RUNNING")) {
-      const completedStatus = job.failedCount > 0 ? "COMPLETED_WITH_ERRORS" : "COMPLETED";
-      try {
-        const completed = await this.#client.send(new UpdateCommand({
-          TableName: this.#tableName,
-          Key: { pk: "ORDINANCE_SUMMARY", sk: "ACTIVE" },
-          UpdateExpression: "SET #status = :status, completedAt = if_not_exists(completedAt, :at), updatedAt = :at",
-          ConditionExpression: "id = :id AND processedCount >= total AND #status IN (:queued, :running)",
-          ExpressionAttributeNames: { "#status": "status" },
-          ExpressionAttributeValues: {
-            ":id": jobId,
-            ":queued": "QUEUED",
-            ":running": "RUNNING",
-            ":status": completedStatus,
-            ":at": at,
-          },
-          ReturnValues: "ALL_NEW",
-        }));
-        job = fromItem<OrdinanceSummaryJob>(completed.Attributes ?? {});
-      } catch (error) {
-        if (!isConditionalFailure(error)) throw error;
-        const current = await this.getOrdinanceSummaryJob();
-        if (!current || current.id !== jobId
-          || (current.status !== "COMPLETED" && current.status !== "COMPLETED_WITH_ERRORS")) {
-          throw error;
-        }
-        job = current;
-      }
-    }
-    return job;
+    return this.reconcileOrdinanceSummaryJob(jobId, at);
   }
 
   async reserveDelivery(value: DeliveryReservation): Promise<boolean> {
