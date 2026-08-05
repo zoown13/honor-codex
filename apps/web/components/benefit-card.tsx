@@ -24,6 +24,9 @@ export function BenefitCard({ benefit, onSelect, onFollow, compact = false }: Be
           <span className={`tag tag--kind-${benefit.benefitKind.toLocaleLowerCase()}`}>
             {KIND_LABEL[benefit.benefitKind]}
           </span>
+          {benefit.summaryProvenance?.kind === "AI" ? (
+            <span className="tag tag--ai-summary">AI 정제</span>
+          ) : null}
         </div>
         {benefit.type === "FACILITY" ? (
           <span className="distance-label">{formatDistance(benefit.distanceKm)}</span>

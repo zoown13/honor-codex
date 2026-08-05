@@ -46,7 +46,11 @@ export function ordinanceContentDate(benefit: Benefit): OrdinanceContentDate | u
     ?? dateCandidate(benefit.validity.checkedAt, "확인일");
 }
 
-export function compareOrdinancesByLatestContent(first: Benefit, second: Benefit): number {
+export function compareOrdinancesForDisplay(first: Benefit, second: Benefit): number {
+  const aiPriority = Number(second.summaryProvenance?.kind === "AI")
+    - Number(first.summaryProvenance?.kind === "AI");
+  if (aiPriority) return aiPriority;
+
   const dateDifference = (ordinanceContentDate(second)?.timestamp ?? 0)
     - (ordinanceContentDate(first)?.timestamp ?? 0);
   if (dateDifference) return dateDifference;

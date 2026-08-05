@@ -1,7 +1,7 @@
 import type { Benefit } from "@honor/core";
 import { benefits } from "../data/sample-benefits";
 import {
-  compareOrdinancesByLatestContent,
+  compareOrdinancesForDisplay,
   ordinanceContentDate,
 } from "../lib/ordinance-display";
 
@@ -26,7 +26,7 @@ describe("ordinance latest-content display", () => {
       validity: { checkedAt: "2026-07-14", startsAt: "2026-07-13" },
     });
 
-    expect([older, newer].sort(compareOrdinancesByLatestContent).map(({ id }) => id))
+    expect([older, newer].sort(compareOrdinancesForDisplay).map(({ id }) => id))
       .toEqual(["ord:newer", "ord:older"]);
     expect(ordinanceContentDate(newer)).toMatchObject({
       label: "수정일",
@@ -34,7 +34,7 @@ describe("ordinance latest-content display", () => {
     });
   });
 
-  it("uses the effective date for legacy AI records whose update date was overwritten", () => {
+  it("puts AI summaries first and uses their effective dates for ordering", () => {
     const legacyAi = ordinanceFixture({
       id: "ord:legacy-ai",
       updatedAt: "2026-07-29T12:50:11.604Z",
@@ -46,14 +46,24 @@ describe("ordinance latest-content display", () => {
         sourceContentHash: "source-hash",
       },
     });
+    const newerAi = ordinanceFixture({
+      ...legacyAi,
+      id: "ord:newer-ai",
+      updatedAt: "2026-07-30T12:50:11.604Z",
+      validity: { checkedAt: "2026-07-14", startsAt: "2025-12-01" },
+      summaryProvenance: {
+        ...legacyAi.summaryProvenance!,
+        generatedAt: "2026-07-30T12:50:11.604Z",
+      },
+    });
     const normal = ordinanceFixture({
       id: "ord:normal",
-      updatedAt: "2025-12-01",
-      validity: { checkedAt: "2026-07-14", startsAt: "2025-12-01" },
+      updatedAt: "2026-07-13",
+      validity: { checkedAt: "2026-07-14", startsAt: "2026-07-13" },
     });
 
-    expect([legacyAi, normal].sort(compareOrdinancesByLatestContent).map(({ id }) => id))
-      .toEqual(["ord:normal", "ord:legacy-ai"]);
+    expect([legacyAi, normal, newerAi].sort(compareOrdinancesForDisplay).map(({ id }) => id))
+      .toEqual(["ord:newer-ai", "ord:legacy-ai", "ord:normal"]);
     expect(ordinanceContentDate(legacyAi)).toMatchObject({
       label: "시행일",
       value: "2024-11-04",

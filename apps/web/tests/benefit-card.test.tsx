@@ -28,4 +28,25 @@ describe("BenefitCard", () => {
 
     expect(screen.getByText(/수정일/)).toBeInTheDocument();
   });
+
+  it("marks AI-refined ordinances on the card", () => {
+    const ordinance = benefits.find((item) => item.type === "ORDINANCE");
+    expect(ordinance).toBeDefined();
+    const aiOrdinance = {
+      ...ordinance!,
+      updatedAt: "2026-07-29T12:50:11.604Z",
+      validity: { ...ordinance!.validity, startsAt: "2025-12-01" },
+      summaryProvenance: {
+        kind: "AI" as const,
+        modelId: "global.amazon.nova-2-lite-v1:0",
+        generatedAt: "2026-07-29T12:50:11.604Z",
+        sourceContentHash: ordinance!.source.contentHash,
+      },
+    };
+
+    render(<BenefitCard benefit={aiOrdinance} onSelect={vi.fn()} onFollow={vi.fn()} />);
+
+    expect(screen.getByText("AI 정제")).toBeInTheDocument();
+    expect(screen.getByText(/시행일/)).toBeInTheDocument();
+  });
 });
