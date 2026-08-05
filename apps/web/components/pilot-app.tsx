@@ -5,7 +5,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { benefits as fallbackBenefits, datasetManifest as fallbackManifest } from "../data/sample-benefits";
 import { getSession, type AuthSession } from "../lib/api";
 import { KIND_LABEL, TYPE_LABEL, formatDate } from "../lib/format";
-import { compareOrdinancesByLatestContent } from "../lib/ordinance-display";
+import { compareOrdinancesForDisplay } from "../lib/ordinance-display";
 import { useBenefitSearch } from "../lib/use-benefit-search";
 import { useDataset } from "../lib/use-dataset";
 import { AdminPanel } from "./admin-panel";
@@ -111,7 +111,7 @@ export function PilotApp({ slug }: PilotAppProps) {
 
   const { results, elapsedMs, isSearching } = useBenefitSearch(benefits, searchRequest);
   const displayedResults = useMemo(
-    () => view === "ordinance" ? [...results].sort(compareOrdinancesByLatestContent) : results,
+    () => view === "ordinance" ? [...results].sort(compareOrdinancesForDisplay) : results,
     [results, view]
   );
 
@@ -301,7 +301,7 @@ export function PilotApp({ slug }: PilotAppProps) {
         ) : null}
 
         {view === "national" ? <div className="feature-intro feature-intro--national"><span aria-hidden="true">全</span><div><strong>전국 어디서나 확인할 혜택</strong><p>기간과 대상 상품이 바뀔 수 있어 공식 공지 확인이 특히 중요해요.</p></div></div> : null}
-        {view === "ordinance" ? <div className="feature-intro feature-intro--ordinance"><span aria-hidden="true">法</span><div><strong>조례 근거와 실제 시행을 함께 확인</strong><p>법제처 수정일 기준 최신순이며, 기존 AI 정제 항목은 시행일을 기준으로 표시합니다.</p></div><select aria-label="조례 지역 선택" value={selectedRegion} onChange={(event) => chooseRegion(event.target.value)}>{REGION_OPTIONS.map(([value, label]) => <option value={value} key={value || "all"}>{value ? label : "모든 지역"}</option>)}</select></div> : null}
+        {view === "ordinance" ? <div className="feature-intro feature-intro--ordinance"><span aria-hidden="true">法</span><div><strong>조례 근거와 실제 시행을 함께 확인</strong><p>AI 정제 완료 항목을 먼저 보여드리고, 각 그룹은 법제처 수정일 기준 최신순으로 정렬합니다.</p></div><select aria-label="조례 지역 선택" value={selectedRegion} onChange={(event) => chooseRegion(event.target.value)}>{REGION_OPTIONS.map(([value, label]) => <option value={value} key={value || "all"}>{value ? label : "모든 지역"}</option>)}</select></div> : null}
 
         {view === "map" ? (
           <MapPanel items={results} onSelect={openBenefit} {...(origin ? { origin } : {})} />
@@ -312,7 +312,7 @@ export function PilotApp({ slug }: PilotAppProps) {
         ) : (
           <section className="results-section" aria-labelledby="results-title">
             <div className="section-heading">
-              <div><span className="eyebrow">{view === "recent" ? "지난 2주" : view === "ordinance" ? "최신 내용순" : origin ? "거리순" : selectedRegion ? "선택 지역" : "추천 목록"}</span><h2 id="results-title">{heading}</h2></div>
+              <div><span className="eyebrow">{view === "recent" ? "지난 2주" : view === "ordinance" ? "AI 정제 우선 · 최신순" : origin ? "거리순" : selectedRegion ? "선택 지역" : "추천 목록"}</span><h2 id="results-title">{heading}</h2></div>
               <div className="results-meta" aria-live="polite"><strong>{displayedResults.length}</strong>개<span>{isSearching ? "검색 중" : `${elapsedMs.toFixed(1)}ms`}</span></div>
             </div>
             {view === "recent" ? <div className="timeline-key"><span className="timeline-key__new" />신규·내용 변경을 최근 확인일 순으로 보여드려요.</div> : null}

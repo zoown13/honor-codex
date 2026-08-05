@@ -770,6 +770,11 @@ a {
   background: #e9ebf5;
 }
 
+.tag--ai-summary {
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+}
+
 .tag--kind-free {
   color: #176846;
   background: #e4f5eb;
