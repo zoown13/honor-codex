@@ -823,6 +823,43 @@ a {
   line-height: 1.5;
 }
 
+.benefit-card--condensed {
+  display: flex;
+  height: 100%;
+  flex-direction: column;
+}
+
+.benefit-card--condensed .benefit-card__main {
+  flex: 1;
+}
+
+.benefit-card--condensed .benefit-card__title,
+.benefit-card--condensed .benefit-card__summary {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+}
+
+.benefit-card--condensed .benefit-card__title {
+  min-height: 2.7em;
+  max-height: 2.7em;
+  -webkit-line-clamp: 2;
+}
+
+.benefit-card--condensed .benefit-card__summary {
+  min-height: 4.5em;
+  max-height: 4.5em;
+  -webkit-line-clamp: 3;
+}
+
+.benefit-card--condensed .benefit-card__meta {
+  min-height: 30px;
+  max-height: 30px;
+  align-content: flex-start;
+  overflow: hidden;
+  line-height: 1.5;
+}
+
 .benefit-card__meta {
   display: flex;
   flex-wrap: wrap;

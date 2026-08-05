@@ -320,7 +320,12 @@ export function PilotApp({ slug }: PilotAppProps) {
               {displayedResults.map((benefit: SearchResult) => (
                 <div key={benefit.id} className={view === "recent" ? "recent-item" : ""}>
                   {view === "recent" ? <div className="recent-item__date"><strong>{formatDate(benefit.updatedAt)}</strong><span>{TYPE_LABEL[benefit.type]} 확인</span></div> : null}
-                  <BenefitCard benefit={benefit} onSelect={openBenefit} onFollow={followBenefit} />
+                  <BenefitCard
+                    benefit={benefit}
+                    onSelect={openBenefit}
+                    onFollow={followBenefit}
+                    condensed={view === "ordinance"}
+                  />
                 </div>
               ))}
             </div>

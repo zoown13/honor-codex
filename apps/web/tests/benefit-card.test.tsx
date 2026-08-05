@@ -49,4 +49,21 @@ describe("BenefitCard", () => {
     expect(screen.getByText("AI 정제")).toBeInTheDocument();
     expect(screen.getByText(/시행일/)).toBeInTheDocument();
   });
+
+  it("uses a uniform condensed preview for ordinance lists", () => {
+    const ordinance = benefits.find((item) => item.type === "ORDINANCE");
+    expect(ordinance).toBeDefined();
+
+    const { container } = render(
+      <BenefitCard
+        benefit={{ ...ordinance!, summary: "긴 조례 원문 ".repeat(100) }}
+        onSelect={vi.fn()}
+        onFollow={vi.fn()}
+        condensed
+      />
+    );
+
+    expect(container.querySelector(".benefit-card--condensed")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "내용 더보기" })).toBeInTheDocument();
+  });
 });
