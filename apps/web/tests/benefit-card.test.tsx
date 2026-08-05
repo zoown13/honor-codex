@@ -65,7 +65,5 @@ describe("BenefitCard", () => {
 
     expect(container.querySelector(".benefit-card--condensed")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "내용 더보기" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: `${ordinance!.title} 상세 내용 보기` }))
-      .toBeInTheDocument();
   });
 });

@@ -44,7 +44,6 @@ export function BenefitCard({
         className="benefit-card__main"
         type="button"
         onClick={() => onSelect(benefit)}
-        aria-label={`${benefit.title} 상세 내용 보기`}
       >
         <span className="benefit-card__title">{benefit.title}</span>
         <span className="benefit-card__summary">{benefit.summary}</span>
