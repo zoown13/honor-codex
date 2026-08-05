@@ -9,13 +9,20 @@ interface BenefitCardProps {
   onSelect: (benefit: SearchResult) => void;
   onFollow: (benefit: SearchResult) => void;
   compact?: boolean;
+  condensed?: boolean;
 }
 
-export function BenefitCard({ benefit, onSelect, onFollow, compact = false }: BenefitCardProps) {
+export function BenefitCard({
+  benefit,
+  onSelect,
+  onFollow,
+  compact = false,
+  condensed = false,
+}: BenefitCardProps) {
   const contentDate = ordinanceContentDate(benefit);
 
   return (
-    <article className={`benefit-card${compact ? " benefit-card--compact" : ""}`}>
+    <article className={`benefit-card${compact ? " benefit-card--compact" : ""}${condensed ? " benefit-card--condensed" : ""}`}>
       <div className="benefit-card__topline">
         <div className="tag-row" aria-label="혜택 분류">
           <span className={`tag tag--${benefit.type.toLocaleLowerCase()}`}>
@@ -33,7 +40,12 @@ export function BenefitCard({ benefit, onSelect, onFollow, compact = false }: Be
         ) : null}
       </div>
 
-      <button className="benefit-card__main" type="button" onClick={() => onSelect(benefit)}>
+      <button
+        className="benefit-card__main"
+        type="button"
+        onClick={() => onSelect(benefit)}
+        aria-label={`${benefit.title} 상세 내용 보기`}
+      >
         <span className="benefit-card__title">{benefit.title}</span>
         <span className="benefit-card__summary">{benefit.summary}</span>
         <span className="benefit-card__meta">
@@ -58,7 +70,7 @@ export function BenefitCard({ benefit, onSelect, onFollow, compact = false }: Be
             + 알림
           </button>
           <button className="detail-action" type="button" onClick={() => onSelect(benefit)}>
-            자세히 <span aria-hidden="true">›</span>
+            {condensed ? "내용 더보기" : "자세히"} <span aria-hidden="true">›</span>
           </button>
         </div>
       </footer>
