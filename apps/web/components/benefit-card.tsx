@@ -1,7 +1,8 @@
 "use client";
 
 import type { SearchResult } from "@honor/core";
-import { formatDistance, KIND_LABEL, STATUS_LABEL, TYPE_LABEL } from "../lib/format";
+import { formatDate, formatDistance, KIND_LABEL, STATUS_LABEL, TYPE_LABEL } from "../lib/format";
+import { ordinanceContentDate } from "../lib/ordinance-display";
 
 interface BenefitCardProps {
   benefit: SearchResult;
@@ -11,6 +12,8 @@ interface BenefitCardProps {
 }
 
 export function BenefitCard({ benefit, onSelect, onFollow, compact = false }: BenefitCardProps) {
+  const contentDate = ordinanceContentDate(benefit);
+
   return (
     <article className={`benefit-card${compact ? " benefit-card--compact" : ""}`}>
       <div className="benefit-card__topline">
@@ -33,6 +36,7 @@ export function BenefitCard({ benefit, onSelect, onFollow, compact = false }: Be
         <span className="benefit-card__meta">
           <span>{benefit.provider}</span>
           {benefit.displayAddress ? <span>{benefit.displayAddress}</span> : null}
+          {contentDate ? <span>{contentDate.label} {formatDate(contentDate.value)}</span> : null}
         </span>
       </button>
 

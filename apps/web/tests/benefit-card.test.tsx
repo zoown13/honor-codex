@@ -19,4 +19,13 @@ describe("BenefitCard", () => {
     await user.click(screen.getByRole("button", { name: "자세히" }));
     expect(onSelect).toHaveBeenCalledWith(benefit);
   });
+
+  it("shows the ordinance date used for latest-content sorting", () => {
+    const ordinance = benefits.find((item) => item.type === "ORDINANCE");
+    expect(ordinance).toBeDefined();
+
+    render(<BenefitCard benefit={ordinance!} onSelect={vi.fn()} onFollow={vi.fn()} />);
+
+    expect(screen.getByText(/수정일/)).toBeInTheDocument();
+  });
 });

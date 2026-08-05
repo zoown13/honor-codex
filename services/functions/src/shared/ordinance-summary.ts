@@ -178,7 +178,9 @@ export function applyOrdinanceSummary(
       inputTokens,
       outputTokens,
     },
-    updatedAt: generatedAt,
+    // AI generation is presentation metadata, not an official ordinance change.
+    // Preserve the law.go.kr modification date used by public latest-content sorting.
+    updatedAt: benefit.updatedAt,
   };
   if (!amount) delete next.amount;
   next.searchText = [
