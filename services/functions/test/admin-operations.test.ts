@@ -117,11 +117,12 @@ describe("ordinance AI summary", () => {
       constraints: ["대상 시설은 담당부서 확인 필요"],
     }));
     const estimate = estimateOrdinanceSummaryCost([ordinance]);
+    const summaryGeneratedAt = "2026-07-29T12:50:11.604Z";
     const summarized = applyOrdinanceSummary(
       ordinance,
       value,
       "global.amazon.nova-2-lite-v1:0",
-      now,
+      summaryGeneratedAt,
       900,
       120,
     );
@@ -141,8 +142,10 @@ describe("ordinance AI summary", () => {
       benefitKind: "DISCOUNT",
       amount: "사용료 50% 감면",
       reviewState: "SOURCE_ONLY",
+      updatedAt: ordinance.updatedAt,
       summaryProvenance: {
         kind: "AI",
+        generatedAt: summaryGeneratedAt,
         sourceContentHash: ordinance.source.contentHash,
         inputTokens: 900,
         outputTokens: 120,
