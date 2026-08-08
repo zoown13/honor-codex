@@ -38,6 +38,7 @@ const NAV_ITEMS: { id: View; label: string; shortLabel: string; symbol: string }
   { id: "admin", label: "소유자 검수", shortLabel: "검수", symbol: "✓" }
 ];
 
+const PUBLIC_NAV_ITEMS = NAV_ITEMS.filter((item) => item.id !== "admin");
 const BOTTOM_VIEWS: View[] = ["nearby", "all", "map", "follow"];
 
 interface PilotAppProps {
@@ -73,7 +74,9 @@ export function PilotApp({ slug }: PilotAppProps) {
       if (!active) return;
       setOnline(navigator.onLine);
       setSession(getSession());
-      const benefitId = new URLSearchParams(window.location.search).get("benefit");
+      const searchParams = new URLSearchParams(window.location.search);
+      if (searchParams.get("view") === "admin") setView("admin");
+      const benefitId = searchParams.get("benefit");
       if (benefitId) setSelectedBenefit(benefitById.get(benefitId) ?? null);
     });
     const handleOnline = () => setOnline(true);
@@ -177,6 +180,10 @@ export function PilotApp({ slug }: PilotAppProps) {
   const changeView = useCallback((nextView: View) => {
     setView(nextView);
     setQuery("");
+    const url = new URL(window.location.href);
+    if (nextView === "admin") url.searchParams.set("view", "admin");
+    else url.searchParams.delete("view");
+    window.history.replaceState(null, "", url);
     window.scrollTo({ top: 0, behavior: "smooth" });
   }, []);
 
@@ -252,7 +259,7 @@ export function PilotApp({ slug }: PilotAppProps) {
 
       <nav className="view-tabs" aria-label="혜택 화면">
         <div className="view-tabs__inner">
-          {NAV_ITEMS.map((item) => (
+          {(view === "admin" ? NAV_ITEMS : PUBLIC_NAV_ITEMS).map((item) => (
             <button
               type="button"
               key={item.id}

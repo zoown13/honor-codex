@@ -45,6 +45,15 @@ test("root path does not reveal the pilot", async ({ page, baseURL }) => {
   await expect(page.getByRole("heading", { name: "공유된 파일럿 주소를 확인해 주세요" })).toBeVisible();
 });
 
+test("owner review stays hidden unless the direct owner route is used", async ({ page }) => {
+  await page.goto("./");
+  await expect(page.getByRole("button", { name: "소유자 검수" })).toHaveCount(0);
+
+  await page.goto("./?view=admin");
+  await expect(page.getByRole("button", { name: "소유자 검수" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "병무청 예우시설" })).toBeVisible();
+});
+
 test("last verified dataset and app shell remain available offline", async ({ browser, baseURL }) => {
   const context = await browser.newContext();
   const page = await context.newPage();
@@ -91,8 +100,7 @@ test("owner can explicitly approve one source batch without starting publish", a
     if (request.url().includes("/v1/admin/publish")) publishRequests.push(request.url());
   });
 
-  await page.goto("./");
-  await page.getByRole("button", { name: "소유자 검수" }).click();
+  await page.goto("./?view=admin");
   await expect(page.getByRole("heading", { name: "병무청 예우시설" })).toBeVisible();
   await expect(page.getByText("승인과 게시는 분리되어 있습니다")).toBeVisible();
   await page.getByRole("button", { name: "전체 1건 검토" }).first().click();
