@@ -605,6 +605,25 @@ export async function approveReviewChunk(input: BulkReviewInput): Promise<BulkRe
   };
 }
 
+export interface IngestionJob {
+  source: ReviewSource;
+  id: string;
+  status: "QUEUED" | "RUNNING" | "COMPLETED" | "FAILED";
+  updatedAt: string;
+  message?: string;
+}
+let mockIngestionJobs: IngestionJob[] = [];
+export async function getIngestionStatus(): Promise<{ jobs: IngestionJob[] }> {
+  if (!IS_MOCK_API) return pilotAdminRequest("/v1/pilot-admin/ingestion");
+  return { jobs: mockIngestionJobs };
+}
+export async function startIngestion(source: ReviewSource): Promise<{ job: IngestionJob }> {
+  if (!IS_MOCK_API) return pilotAdminRequest("/v1/pilot-admin/ingestion", { method: "POST", body: JSON.stringify({ source }) });
+  const job: IngestionJob = { source, id: crypto.randomUUID(), status: "COMPLETED", updatedAt: new Date().toISOString(), message: "데모 수집이 완료되었습니다." };
+  mockIngestionJobs = [...mockIngestionJobs.filter((item) => item.source !== source), job];
+  return { job };
+}
+
 export async function getPublishStatus(): Promise<PublishStatusResponse> {
   if (!IS_MOCK_API) return pilotAdminRequest<PublishStatusResponse>("/v1/pilot-admin/publish");
   const changes = storedChanges();

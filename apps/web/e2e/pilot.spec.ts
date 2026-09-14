@@ -121,3 +121,17 @@ test("owner can explicitly approve one source batch without starting publish", a
   await expect(page.getByRole("heading", { name: "승인 대기 2건" })).toBeVisible();
   expect(publishRequests).toEqual([]);
 });
+
+test("owner can collect a source without publishing", async ({ page }) => {
+  const publishes: string[] = [];
+  page.on("request", (request) => {
+    if (request.method() === "POST" && request.url().endsWith("/publish")) publishes.push(request.url());
+  });
+  await page.goto("./?view=admin");
+  const panel = page.getByRole("region", { name: "데이터 수동 업데이트" });
+  await expect(panel).toBeVisible();
+  await panel.getByRole("button", { name: "예우시설 지금 수집" }).click();
+  await expect(panel.getByText("데모 수집이 완료되었습니다.")).toBeVisible();
+  await expect(panel.getByRole("button", { name: "예우시설 지금 수집" })).toBeEnabled();
+  expect(publishes).toEqual([]);
+});
