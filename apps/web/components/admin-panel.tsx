@@ -25,6 +25,7 @@ import {
 import { formatDate } from "../lib/format";
 import { AdminOrdinanceSummaryPanel } from "./admin-ordinance-summary-panel";
 import { AdminPublishPanel } from "./admin-publish-panel";
+import { AdminIngestionPanel } from "./admin-ingestion-panel";
 import { AdminReviewDetail } from "./admin-review-detail";
 
 const REVIEW_PAGE_SIZE = 25;
@@ -381,6 +382,7 @@ export function AdminPanel() {
       ) : null}
 
       <div className="admin-operations">
+        <AdminIngestionPanel onCompleted={loadSummary} />
         <AdminPublishPanel onPublished={loadSummary} />
         <AdminOrdinanceSummaryPanel onCompleted={loadSummary} />
       </div>

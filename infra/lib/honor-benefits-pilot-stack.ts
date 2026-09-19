@@ -633,6 +633,38 @@ export class HonorBenefitsPilotStack extends Stack {
       memorySize: 512,
       timeout: Duration.minutes(10)
     });
+    const ingestionWorker = createFunction("ManualIngestionWorker", {
+      entry: "ingestion-worker.ts",
+      environment: {
+        ...repositoryEnvironment, ...datasetEnvironment,
+        MMA_LIVE_INGESTION_ENABLED: mmaLiveIngestionEnabled.valueAsString,
+        MMA_FACILITIES_URL: mmaFacilitiesUrl.valueAsString,
+        MMA_NOTICES_URL: mmaNoticesUrl.valueAsString,
+        LAW_API_OC: lawApiOc.valueAsString,
+        LAW_API_BASE_URL: lawApiBaseUrl.valueAsString
+      },
+      memorySize: 1024,
+      timeout: Duration.minutes(15)
+    });
+    const lawIngestionAvailable = new CfnCondition(this, "LawIngestionAvailable", {
+      expression: Fn.conditionNot(Fn.conditionEquals(lawApiOc.valueAsString, ""))
+    });
+    const ingestionControl = createFunction("ManualIngestionControl", {
+      entry: "ingestion-control.ts",
+      environment: {
+        ...repositoryEnvironment,
+        ADMIN_EMAILS: adminEmails.valueAsString,
+        PILOT_ADMIN_TOKEN: pilotAdminToken.valueAsString,
+        MMA_LIVE_INGESTION_ENABLED: mmaLiveIngestionEnabled.valueAsString,
+        LAW_INGESTION_AVAILABLE: Fn.conditionIf(lawIngestionAvailable.logicalId, "true", "false").toString(),
+        INGESTION_WORKER_NAME: ingestionWorker.functionName
+      }
+    });
+    table.grantReadWriteData(ingestionControl);
+    table.grantReadWriteData(ingestionWorker);
+    dataBucket.grantReadWrite(ingestionWorker);
+    ingestionWorker.grantInvoke(ingestionControl);
+
     const subscriptionsFunction = createFunction("Subscriptions", {
       entry: "subscriptions.ts",
       environment: repositoryEnvironment
@@ -909,6 +941,12 @@ export class HonorBenefitsPilotStack extends Stack {
       "AdminReviewsIntegration",
       adminReviewsFunction
     );
+    const ingestionIntegration = new integrations.HttpLambdaIntegration("ManualIngestionIntegration", ingestionControl);
+    httpApi.addRoutes({
+      path: "/v1/pilot-admin/ingestion",
+      methods: [apigwv2.HttpMethod.GET, apigwv2.HttpMethod.POST],
+      integration: ingestionIntegration
+    });
     const publishIntegration = new integrations.HttpLambdaIntegration(
       "PublishIntegration",
       publishControlFunction

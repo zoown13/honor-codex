@@ -147,7 +147,7 @@ describe("HonorBenefitsPilotStack", () => {
       AllowedOAuthFlows: Match.absent()
     });
     template.resourceCountIs("AWS::ApiGatewayV2::Authorizer", 1);
-    template.resourceCountIs("AWS::ApiGatewayV2::Route", 29);
+    template.resourceCountIs("AWS::ApiGatewayV2::Route", 31);
     template.hasResourceProperties("AWS::ApiGatewayV2::Route", {
       RouteKey: "POST /v1/auth/otp/start",
       AuthorizationType: "NONE"
@@ -250,8 +250,8 @@ describe("HonorBenefitsPilotStack", () => {
     expect(normalizedDependsOn).toEqual(expect.arrayContaining(otpRouteLogicalIds));
   });
 
-  it("runs twelve Node.js 24 ARM Lambdas with async publishing and bounded AI workers", () => {
-    template.resourceCountIs("AWS::Lambda::Function", 12);
+  it("runs fourteen Node.js 24 ARM Lambdas with async publishing and bounded AI workers", () => {
+    template.resourceCountIs("AWS::Lambda::Function", 14);
     template.allResourcesProperties("AWS::Lambda::Function", {
       Runtime: "nodejs24.x",
       Architectures: ["arm64"],
@@ -282,6 +282,19 @@ describe("HonorBenefitsPilotStack", () => {
     expect(keys("honor-pilot-ingest-ordinances")).toEqual([
       "DATA_BUCKET", "DATA_PREFIX", "LAW_API_BASE_URL", "LAW_API_OC", "RAW_PREFIX", "TABLE_NAME"
     ]);
+    for (const verb of ["GET", "POST"]) {
+      template.hasResourceProperties("AWS::ApiGatewayV2::Route", {
+        RouteKey: verb + " /v1/pilot-admin/ingestion",
+        AuthorizationType: "NONE"
+      });
+    }
+    expect(keys("honor-pilot-manual-ingestion-control")).toEqual([
+      "ADMIN_EMAILS", "INGESTION_WORKER_NAME", "LAW_INGESTION_AVAILABLE",
+      "MMA_LIVE_INGESTION_ENABLED", "PILOT_ADMIN_TOKEN", "TABLE_NAME"
+    ]);
+    const manualWorker = lambdaResources.find(({ Properties }) => Properties.FunctionName === "honor-pilot-manual-ingestion-worker");
+    expect(manualWorker?.Properties.Timeout).toBe(900);
+    expect(manualWorker?.Properties.Environment.Variables).not.toHaveProperty("PILOT_ADMIN_TOKEN");
     expect(keys("honor-pilot-subscriptions")).toEqual(["TABLE_NAME"]);
     expect(keys("honor-pilot-auth-otp")).toEqual([
       "ADMIN_EMAILS", "PILOT_ALLOWED_EMAILS", "USER_POOL_CLIENT_ID", "USER_POOL_ID"
@@ -396,8 +409,8 @@ describe("HonorBenefitsPilotStack", () => {
     expect(JSON.stringify(amplifyDeploymentStatement?.Resource)).toContain("AmplifyApp");
 
     template.resourceCountIs("AWS::Events::Rule", 5);
-    template.resourceCountIs("AWS::CloudWatch::Alarm", 13);
-    template.resourceCountIs("AWS::Logs::LogGroup", 13);
+    template.resourceCountIs("AWS::CloudWatch::Alarm", 15);
+    template.resourceCountIs("AWS::Logs::LogGroup", 15);
     template.allResourcesProperties("AWS::Logs::LogGroup", {
       RetentionInDays: 14
     });
