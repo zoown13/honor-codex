@@ -106,6 +106,16 @@ test("owner can explicitly approve one source batch without starting publish", a
   await page.getByRole("button", { name: "전체 1건 검토" }).first().click();
   const fullReview = page.getByRole("dialog", { name: "병무청 예우시설 전체 검수" });
   await expect(fullReview.getByText("/ 1건")).toBeVisible();
+  await fullReview.getByRole("button", { name: "검수 상세" }).click();
+  const detail = page.getByRole("dialog").filter({ has: page.getByRole("button", { name: "목록으로 돌아가기" }) });
+  await expect(detail).toBeVisible();
+  await expect.poll(() => detail.evaluate((element) => {
+    const bounds = element.getBoundingClientRect();
+    return element.contains(document.elementFromPoint(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2));
+  })).toBe(true);
+  await detail.getByRole("button", { name: "목록으로 돌아가기" }).click();
+  await expect(detail).toHaveCount(0);
+  await expect(fullReview.getByText("/ 1건")).toBeVisible();
   await fullReview.getByRole("button", { name: "전체 검수 목록 닫기" }).click();
   await page.getByRole("button", { name: "병무청 예우시설 1건 일괄 승인" }).click();
 
