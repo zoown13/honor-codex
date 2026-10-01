@@ -2975,7 +2975,7 @@ a {
 }
 
 .review-detail-backdrop {
-  z-index: 80;
+  z-index: 310;
 }
 
 .review-detail-dialog {
